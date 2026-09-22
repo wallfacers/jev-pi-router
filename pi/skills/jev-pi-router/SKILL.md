@@ -1,70 +1,51 @@
 ---
 name: jev-pi-router
-description: PI 多厂商模型路由的派发纪律：强模型做计划/决策/review/兜底/主控，flash 子代理实现代码，跨厂商互审，双轨兜底。当任务需要"写代码/实现功能/改代码"或需要 review 时使用。
+description: Multi-vendor model routing dispatch discipline for PI. Strong models handle planning/decision/review/fallback/orchestration; flash sub-agents implement code; cross-vendor mutual review; dual-track failover. Use when the task involves "writing code / implementing features / modifying code" or requires code review.
 ---
 
-# jev-pi-router — 派发纪律
+# jev-pi-router — Dispatch Discipline
 
-你是强模型主 Agent（orchestrator）。以下纪律保证成本分档、前置缓存不被击穿、多厂商互信。
+You are the strong-model main Agent (orchestrator). The following discipline ensures cost-tiered dispatch, prompt-cache integrity, and multi-vendor trust.
 
-## 铁律（不可违反）
+## Hard Rules (Never Violate)
 
-1. **主会话不写代码**（FR-003）：具体代码实现一律以 `subagent` 派发给 **flash 模型**执行者
-   （`model: "provider/id"`，来自 flash 池：deepseek/deepseek-flash、glm/glm-5.3-flash、
-   relay/cmd-deepseek-v4.1-flash、opencode-go/deepseek-flash）。
-2. **主会话不切模型**（FR-004）：会话进行中禁止切换主模型（前置缓存保护）。例外：`/new`
-   干净会话可按轮切换（B 模式，须用户显式开启）。如遇强模型故障必须换主模型，先向用户
-   显式提示缓存代价。
-3. **代码 review 必须异源**（FR-007）：reviewer 子代理必须来自与实现者**不同厂商**的强模型，
-   且用 fresh context（不携带实现者的思考过程）。
-4. **计划/决策互审**（FR-008）：计划、架构决策由另一强厂商复核（A 产 B 审、B 产 A 审），
-   互审结论随产物留痕。
-5. **每次派发先问路由决策器**（绝对路径，任意目录可用）：
+1. **Main session never writes code** (FR-003): all concrete code implementation must be dispatched as `subagent` tasks to **flash-model** executors
+   (`model: "provider/id"`, from the flash pool: deepseek/deepseek-flash, glm/glm-5.3-flash,
+   relay/cmd-deepseek-v4.1-flash, opencode-go/deepseek-flash).
+2. **Main session never switches models** (FR-004): switching the main model mid-session is prohibited (prompt-cache protection). Exception: a `/new` clean session may switch per turn (B mode, requires explicit user opt-in). If the strong model fails and a model switch is unavoidable, explicitly inform the user of the cache cost first.
+3. **Code review must be cross-vendor** (FR-007): the reviewer sub-agent must be a strong model from a **different vendor** than the implementer, and must use a fresh context (no carry-over of the implementer's reasoning).
+4. **Plan/decision mutual review** (FR-008): plans and architectural decisions must be reviewed by a strong model from another vendor (A produces → B reviews, B produces → A reviews). The review conclusion is recorded alongside the artifact.
+5. **Every dispatch must first consult the router decision engine** (absolute paths, works from any directory):
 
    ```bash
-   echo '{"task_ref":"<id>","task_brief":"<≤2000字摘要>","role":"implement|review|plan|...",
-         "implementer":{"vendor":"<产出者厂商>","model":"<...>"}或null,
+   echo '{"task_ref":"<id>","task_brief":"<≤2000-char summary>","role":"implement|review|plan|...",
+         "implementer":{"vendor":"<producer vendor>","model":"<...>"} or null,
          "risk_tags":[],"history":{"review_fail_count":0,"previous_models":[]},
-         "vendor_failures":[{"vendor":"<故障厂商>","trigger":"timeout"}],
-         "vendor_success":[{"vendor":"<刚成功厂商>"}]}' \
-     | ~/workspace/github/jev-pi-router/.venv/bin/python \
-       ~/workspace/github/jev-pi-router/bin/jev-pi-decide \
-       --config ~/workspace/github/jev-pi-router/router.config.yaml
+         "vendor_failures":[{"vendor":"<failed vendor>","trigger":"timeout"}],
+         "vendor_success":[{"vendor":"<recently succeeded vendor>"}]}' \
+     | ~/project/jev-pi-router/.venv/bin/python \
+       ~/project/jev-pi-router/bin/jev-pi-decide \
+       --config ~/project/jev-pi-router/router.config.yaml
    ```
 
-   按返回的 `chosen` / `review_plan` / `fallback_order` 执行；`fail_open: true` 表示 Jev
-   不可用、结果来自规则回退，正常继续（FR-006）。
+   Execute according to the returned `chosen` / `review_plan` / `fallback_order`; `fail_open: true` means Jev is unavailable and the result comes from the rule-based fallback — proceed normally (FR-006).
 
-## 双轨兜底（FR-009/010）
+## Dual-Track Failover (FR-009/010)
 
-- **故障转移**：执行者报错（超时/配额/限流/5xx）→ 把故障写入**顶层** `vendor_failures` 重派
-  `fallback_order[0]`；主会话无感继续。同一厂商连续失败由决策器自动熔断；执行**成功**后
-  下次请求带顶层 `vendor_success` 闭合熔断（breaker_close 留痕）。
-- **429 分诊（重要）**：① 并发/瞬时限流（"rate limit"/"concurrent"/retry-after 秒级）→
-  `trigger:"rate_limit"`，重试即可，不计失败不封禁；② 套餐/周限额额度尽（"quota"/"billing"/
-  "usage limit"/`x-ratelimit-reset` 跨天）→ `trigger:"quota"`（可带 `quota_until` 重置时间戳
-  与 `key_id`）：该厂商**立即封禁、下次不再选中**；带 `quota_until` 到期自动解锁，否则无限期
-  封禁，用户确认套餐重置后用 `vendor_unlock:[{"vendor":"..."}]` 或
-  `bin/jev-pi-doctor unlock <vendor>` 解锁（`bin/jev-pi-doctor quotas` 查看封禁表）。
-  - **提前重置（活动/重置卡，S12.1）**：套餐未到重置时间但用户已通过**活动或重置卡**提前
-    重置（如 Codex 活动/重置卡）→ 用 `vendor_unlock:[{"vendor":"...","reason":"reset_card"}]`
-    （或 `reason:"activity"`）**立即解锁，无需等到 quota_until**；`reset_card` 会扣卡
-    （`bin/jev-pi-doctor cards <vendor> --add N` 记卡/查余量；无卡也放行）。决策响应的
-    `quota_hints` 会提示各封禁厂商的自动解锁时间与重置卡余量——**看到提示应主动询问用户
-    “是否使用重置卡解锁”**，用户同意后再发 `vendor_unlock`。
-- **质量升级**：实现连续 **2 轮 review 不过** → 重新派发但 `history.review_fail_count` 置 2，
-  决策器会返回强模型**换厂商**的 chosen（quality_upgrade 事件自动留痕）。
-- 强模型执行失败 → 换另一强厂商（fallback_order 里的 strong 条目）。
-- 池穷尽 → 显式告知用户 `pool_exhausted`，不要静默降级交付低质量产出。
-- review 意见自相矛盾 → 你（主 Agent）仲裁，结论写入任务总结。
+- **Fault transfer**: executor reports an error (timeout/quota/throttle/5xx) → write the failure into the **top-level** `vendor_failures` and re-dispatch to `fallback_order[0]`; the main session continues without disruption. Consecutive failures from the same vendor are automatically circuit-broken by the decision engine; after a **successful** execution, include top-level `vendor_success` on the next request to close the breaker (breaker_close is logged).
+- **429 triage (critical)**: ① Concurrency/transient rate limiting ("rate limit"/"concurrent"/retry-after in seconds) → `trigger:"rate_limit"`, retry as-is, does not count as a failure and does not ban the vendor; ② Plan/weekly quota exhausted ("quota"/"billing"/"usage limit"/`x-ratelimit-reset` spanning days) → `trigger:"quota"` (optionally include `quota_until` reset timestamp and `key_id`): that vendor is **immediately banned and will not be selected** on subsequent requests. If `quota_until` is provided, auto-unlock when it expires; otherwise ban indefinitely. After the user confirms the plan has been reset, unlock via `vendor_unlock:[{"vendor":"..."}]` or `bin/jev-pi-doctor unlock <vendor>` (run `bin/jev-pi-doctor quotas` to view the ban table).
+  - **Early reset (event/reset card, S12.1)**: the plan has not reached its reset time but the user has early-reset it via an **event or reset card** (e.g. Codex event/reset card) → use `vendor_unlock:[{"vendor":"...","reason":"reset_card"}]` (or `reason:"activity"`) to **unlock immediately without waiting for quota_until**; `reset_card` deducts a card (`bin/jev-pi-doctor cards <vendor> --add N` to record cards / check balance; proceed even without cards). The decision response's `quota_hints` indicates auto-unlock times and remaining reset cards for each banned vendor — **when you see hints, proactively ask the user "would you like to unlock with a reset card?"**, then issue `vendor_unlock` only after user consent.
+- **Quality escalation**: implementation fails review **2 consecutive rounds** → re-dispatch with `history.review_fail_count` set to 2; the decision engine will return a `chosen` that switches to a **different-vendor strong model** (quality_upgrade event is automatically logged).
+- Strong-model execution failure → switch to another strong vendor (strong entries in `fallback_order`).
+- Pool exhausted → explicitly inform the user of `pool_exhausted`; do not silently degrade to low-quality output.
+- Review opinions contradict each other → you (the main Agent) arbitrate; record the conclusion in the task summary.
 
-## review 派发模板
+## Review Dispatch Template
 
-- 代码 review 子代理任务描述只含：改动 diff/文件清单、验收标准、风险标签——**不含**实现者的
-  推理过程（独立性）。
-- 计划互审子代理任务描述只含：计划全文 + 目标——由另一强厂商指出缺口。
+- Code review sub-agent task description must contain only: the change diff / file list, acceptance criteria, and risk tags — **not** the implementer's reasoning process (independence).
+- Plan mutual-review sub-agent task description must contain only: the full plan text + objectives — the other strong vendor identifies gaps.
 
-## 观测
+## Observability
 
-- 决策日志自动写入 `~/.jev-pi-router/decisions.jsonl`（FR-011），无需手工记录。
-- 需要汇总时运行 `~/workspace/github/jev-pi-router/.venv/bin/python ~/workspace/github/jev-pi-router/bin/jev-pi-report --days 1`。
+- Decision logs are automatically written to `~/.jev-pi-router/decisions.jsonl` (FR-011); no manual recording needed.
+- For a summary report, run `~/project/jev-pi-router/.venv/bin/python ~/project/jev-pi-router/bin/jev-pi-report --days 1`.

@@ -19,7 +19,29 @@ import urllib.request
 from pathlib import Path
 
 DEFAULT_ENDPOINT = "https://api.typesafe.ai/v1/systemone"
-JEV_ULTRAFAST_ENV_FILE = Path("/home/wushengzhou/workspace/github/jev-ultrafast/.env")
+
+
+def _resolve_env_file() -> Path:
+    """解析 jev-ultrafast 的 .env 路径（导入时求值一次）。
+
+    按序取首个存在者：`JEV_ULTRAFAST_ENV` 显式指定 > 本机 `~/project/jev-ultrafast/.env`
+    > `~/.config/jev-ultrafast/.env` > 生成机历史路径。都不存在时返回本机默认位置，
+    由 `_env_file_value` 判空处理（等价于"未配置"，走 fail-open 兜底）。
+    """
+    explicit = os.environ.get("JEV_ULTRAFAST_ENV")
+    candidates = [
+        Path(explicit) if explicit else None,
+        Path.home() / "project" / "jev-ultrafast" / ".env",
+        Path.home() / ".config" / "jev-ultrafast" / ".env",
+        Path("/home/wushengzhou/workspace/github/jev-ultrafast/.env"),
+    ]
+    for candidate in candidates:
+        if candidate is not None and candidate.exists():
+            return candidate
+    return candidates[1]
+
+
+JEV_ULTRAFAST_ENV_FILE = _resolve_env_file()
 
 
 class JevError(Exception):

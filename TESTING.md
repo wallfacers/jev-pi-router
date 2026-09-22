@@ -15,7 +15,7 @@
 
 1. **新开 pi 会话**（任意项目目录均可），输入测试任务（示例，可换）：
 
-   > 使用 jev-pi-router 路由纪律完成以下任务：给 ~/workspace/github/jev-pi-router 加一个
+   > 使用 jev-pi-router 路由纪律完成以下任务：给 ~/project/jev-pi-router 加一个
    > `bin/jev-pi-stats` 小脚本（输出决策日志里各厂商的调用次数），并补一个 pytest 用例。
 
 2. **期望观察**（对照技能纪律逐条看）：
@@ -28,8 +28,8 @@
 3. **判定**（任务完成后跑）：
 
    ```bash
-   ~/workspace/github/jev-pi-router/.venv/bin/python \
-     ~/workspace/github/jev-pi-router/bin/jev-pi-report --days 1
+   ~/project/jev-pi-router/.venv/bin/python \
+     ~/project/jev-pi-router/bin/jev-pi-report --days 1
    ```
 
    - ✅ `代码 review: cross_vendor` 占比 100%（SC-002）
@@ -57,7 +57,7 @@
 
 ## 故障排查
 
-- 决策器报"配置文件不存在" → 确认命令带了 `--config ~/workspace/github/jev-pi-router/router.config.yaml`。
+- 决策器报"配置文件不存在" → 确认命令带了 `--config ~/project/jev-pi-router/router.config.yaml`。
 - Jev fail-open 频繁 → 检查 `AI_GATEWAY_API_KEY`/`TYPESAFE_*` 环境变量（`.bashrc`）。
 - 想看每次路由的细节 → `tail -f ~/.jev-pi-router/decisions.jsonl`。
 - 回滚 pi 侧配置 → `cp ~/.pi/agent/{models,settings}.json.bak-jev-pi ~/.pi/agent/`（分别覆盖）。
