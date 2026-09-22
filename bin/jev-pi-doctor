@@ -1,0 +1,184 @@
+#!/usr/bin/env python3
+"""jev-pi-doctor — 健康探针 + 中转缓存透传实测（contracts/decision-cli.md doctor 节；research R8）。
+
+check:  校验 router.config.yaml 全部 api_ref 已注册于 pi ~/.pi/agent/models.json。
+probe:  同一 ≥1000-token 稳定前缀连发两次 /v1/messages，比较第二次 usage 的
+        cache_read_input_tokens / cache_creation_input_tokens 判定 full/partial/none。
+        --write-back 将结果回填 router.config.yaml 对应条目的 cache_passthrough。
+鉴权：--key / 环境变量 JEV_PI_PROBE_KEY / <PROVIDER>_API_KEY（如 MIMO_API_KEY）。
+"""
+
+import argparse
+import json
+import os
+import re
+import sys
+import time
+import urllib.error
+import urllib.request
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+
+import yaml                                             # noqa: E402
+
+PI_MODELS_JSON = os.path.expanduser("~/.pi/agent/models.json")
+PROBE_UA = "claude-cli/2.0.14 (external, cli)"   # Cloudflare 拦截 python-urllib 默认 UA（error 1010）
+LONG_PREFIX = ("你是一个代码评审助手。以下是项目约定的详细上下文，包含目录结构、编码规范、"
+               "测试要求与发布流程。请在回答任何问题前完整阅读并遵循这些约定。") * 40  # ≥1000 tokens
+
+
+def load_pi_models() -> dict:
+    with open(PI_MODELS_JSON, encoding="utf-8") as fh:
+        return json.load(fh).get("providers", {})
+
+
+def cmd_check(config_path: str) -> int:
+    providers = load_pi_models()
+    raw = yaml.safe_load(open(config_path, encoding="utf-8")) or {}
+    missing = []
+    for pool in ("strong_pool", "flash_pool"):
+        for item in raw.get(pool) or []:
+            api_ref = item["api_ref"]
+            provider, _, model = api_ref.partition("/")
+            if provider not in providers or not any(m.get("id") == model for m in providers[provider].get("models", [])):
+                missing.append(api_ref)
+    result = {"checked_config": config_path, "unregistered": missing, "ok": not missing}
+    print(json.dumps(result, ensure_ascii=False))
+    return 0 if not missing else 1
+
+
+def _resolve_key(provider: str, explicit: str | None) -> str | None:
+    if explicit:
+        return explicit
+    for name in (f"{provider.upper().replace('-', '_')}_API_KEY", "CMD_API_KEY", "LITELLM_MASTER_KEY",
+                 "JEV_PI_PROBE_KEY", "ANTHROPIC_AUTH_TOKEN"):
+        value = os.environ.get(name)
+        if value:
+            return value
+    auth_path = os.path.expanduser("~/.pi/agent/auth.json")
+    if os.path.exists(auth_path):
+        try:
+            data = json.load(open(auth_path, encoding="utf-8"))
+            node = data.get(provider) or {}
+            if isinstance(node, dict):
+                return node.get("key") or node.get("apiKey") or node.get("token")
+        except (json.JSONDecodeError, OSError):
+            pass
+    return None
+
+
+def _messages_request(base_url: str, key: str, model: str, extra_headers: dict | None = None) -> tuple:
+    """发一次带 cache_control 的 /v1/messages 请求，返回 (usage, ttft_ms)。"""
+    body = {
+        "model": model,
+        "max_tokens": 1,
+        "system": [{"type": "text", "text": LONG_PREFIX, "cache_control": {"type": "ephemeral"}}],
+        "messages": [{"role": "user", "content": "请回答：1+1=?"}],
+    }
+    request = urllib.request.Request(
+        base_url.rstrip("/") + "/v1/messages",
+        data=json.dumps(body).encode("utf-8"),
+        headers={"Authorization": f"Bearer {key}", "x-api-key": key,
+                 "anthropic-version": "2023-06-01", "Content-Type": "application/json",
+                 "User-Agent": PROBE_UA,
+                 **(extra_headers or {})},
+        method="POST",
+    )
+    started = time.perf_counter()
+    with urllib.request.urlopen(request, timeout=30) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+    ttft_ms = (time.perf_counter() - started) * 1000
+    return payload.get("usage") or {}, ttft_ms
+
+
+def cmd_probe(api_ref: str, config_path: str, key: str | None, write_back: bool,
+              extra_headers: dict | None = None) -> int:
+    provider, _, model = api_ref.partition("/")
+    providers = load_pi_models()
+    if provider not in providers:
+        print(json.dumps({"api_ref": api_ref, "error": f"provider 未注册: {provider}"}))
+        return 1
+    base_url = providers[provider].get("baseUrl", "")
+    resolved_key = _resolve_key(provider, key)
+    if not resolved_key:
+        print(json.dumps({"api_ref": api_ref, "error": "未找到鉴权 key（--key / JEV_PI_PROBE_KEY / PROVIDER_API_KEY）"}))
+        return 1
+
+    rounds = []
+    try:
+        for _ in range(3):                       # 多轮聚合：单轮 TTFT 抖动会误判（R8）
+            usage1, ttft1 = _messages_request(base_url, resolved_key, model, extra_headers)
+            usage2, ttft2 = _messages_request(base_url, resolved_key, model, extra_headers)
+            rounds.append((usage1, ttft1, usage2, ttft2))
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError) as exc:
+        print(json.dumps({"api_ref": api_ref, "error": f"探针请求失败: {exc}"}))
+        return 1
+
+    evidence_rounds = []
+    verdict = "none"
+    rank = {"none": 0, "partial": 1, "full": 2}
+    for usage1, ttft1, usage2, ttft2 in rounds:
+        cache_read = int(usage2.get("cache_read_input_tokens") or 0)
+        cache_creation = int(usage2.get("cache_creation_input_tokens") or 0)
+        ttft_delta = ttft2 - ttft1
+        if cache_read > 0:
+            round_verdict = "full"
+        elif cache_creation > 0 or (ttft1 > 0 and ttft_delta <= -0.3 * ttft1):
+            round_verdict = "partial"
+        else:
+            round_verdict = "none"
+        if rank[round_verdict] > rank[verdict]:
+            verdict = round_verdict
+        evidence_rounds.append({"first": usage1, "second": usage2,
+                                "ttft1_ms": round(ttft1), "ttft2_ms": round(ttft2),
+                                "ttft_delta_ms": round(ttft_delta), "verdict": round_verdict})
+
+    result = {
+        "api_ref": api_ref,
+        "cache_passthrough": verdict,
+        "evidence": {"rounds": evidence_rounds},
+        "checked_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+    }
+    print(json.dumps(result, ensure_ascii=False))
+
+    if write_back:
+        text = open(config_path, encoding="utf-8").read()
+        raw = yaml.safe_load(text) or {}
+        updated = False
+        for pool in ("strong_pool", "flash_pool"):
+            for item in raw.get(pool) or []:
+                if item.get("api_ref") == api_ref:
+                    item["cache_passthrough"] = verdict
+                    updated = True
+        if updated:
+            with open(config_path, "w", encoding="utf-8") as fh:
+                yaml.safe_dump(raw, fh, allow_unicode=True, sort_keys=False)
+            print(json.dumps({"api_ref": api_ref, "write_back": "ok", "cache_passthrough": verdict}))
+    return 0
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(prog="jev-pi-doctor")
+    parser.add_argument("--config", default=os.environ.get("JEV_PI_ROUTER_CONFIG", "router.config.yaml"))
+    sub = parser.add_subparsers(dest="command", required=True)
+    sub.add_parser("check")
+    probe = sub.add_parser("probe")
+    probe.add_argument("api_ref")
+    probe.add_argument("--key", default=None)
+    probe.add_argument("--header", action="append", default=None,
+                       help="额外请求头 'K:V'（如 x-opencode-session:<id>），可重复")
+    probe.add_argument("--write-back", action="store_true")
+    args = parser.parse_args()
+
+    if args.command == "check":
+        return cmd_check(args.config)
+    extra_headers = {}
+    for item in args.header or []:
+        name, _, value = item.partition(":")
+        if name and value:
+            extra_headers[name.strip()] = value.strip()
+    return cmd_probe(args.api_ref, args.config, args.key, args.write_back, extra_headers)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

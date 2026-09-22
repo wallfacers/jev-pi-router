@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+dist/
+*.egg-info/
+*.log
+.env*
+router.config.yaml
+.pytest_cache/
+.DS_Store
+.idea/
+.vscode/

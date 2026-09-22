@@ -1,0 +1,89 @@
+# jev-pi-router 默认配置（contracts/config-schema.md）
+# 复制为 router.config.yaml 后按需修改；增删厂商/调池只改本文件（FR-013）。
+version: 1
+
+# ── 模型池（有序；顺序 = 手动模式路由优先级；FR-001）────────────────
+strong_pool:
+  - vendor: mimo
+    model: mimo-v2.6-pro
+    api_ref: mimo/mimo-v2.6-pro
+    cost_hint: 1.0
+    cache_passthrough: unknown    # jev-pi-doctor probe --write-back 回填
+    enabled: true
+  - vendor: glm
+    model: glm-5.3
+    api_ref: glm/glm-5.3
+    cost_hint: 1.0
+    cache_passthrough: unknown
+    enabled: true
+
+flash_pool:
+  - vendor: deepseek
+    model: deepseek-flash
+    api_ref: deepseek/deepseek-flash
+    cost_hint: 0.15
+    cache_passthrough: full       # api.deepseek.com 官方直连，厂商侧缓存已知存在
+    enabled: true
+  - vendor: glm
+    model: glm-5.3-flash
+    api_ref: glm/glm-5.3-flash
+    cost_hint: 0.15
+    cache_passthrough: unknown
+    enabled: true
+  - vendor: relay
+    model: cmd-deepseek-v4.1-flash
+    api_ref: relay/cmd-deepseek-v4.1-flash
+    cost_hint: 0.1
+    cache_passthrough: unknown    # 本地中转，doctor probe 实测项
+    enabled: true
+  - vendor: opencode-go
+    model: deepseek-flash
+    api_ref: opencode-go/deepseek-flash
+    cost_hint: 0.1
+    cache_passthrough: unknown    # 中转，doctor probe 实测项
+    enabled: true
+
+# ── 角色 → 池绑定（FR-002；implement 必须 = flash，FR-003）─────────
+roles:
+  orchestrator: strong
+  plan: strong
+  decision: strong
+  review: strong
+  fallback_arbiter: strong
+  implement: flash
+
+# ── 跨厂商 review（FR-007/008）────────────────────────────────────
+review:
+  code: cross_vendor_strong
+  plan_decision: mutual_strong
+  max_rounds: 2
+  degrade_to_single_vendor: true   # 强池仅单厂商时降级 + 显式标记（US2-3）
+
+# ── 决策引擎（FR-005/006）────────────────────────────────────────
+decision_engine:
+  primary: jev
+  fallback: rules
+  timeout_ms: 2000
+  fail_open: true                  # 投产必须 true（FR-006）
+
+# ── 双轨兜底（FR-009/010）────────────────────────────────────────
+fallback:
+  fault_transfer:
+    max_attempts: 2
+  quality_upgrade:
+    review_fails: 2
+    escalate_to: strong
+    switch_vendor: true
+  breaker:
+    consecutive_failures: 3
+    cooldown_sec: 300
+
+# ── 自动模式 / 自动探测（FR-012）──────────────────────────────────
+auto_mode:
+  enabled: false
+  probe_interval_min: 30
+  signals: [availability, cost, latency, cache]
+
+# ── B 模式（FR-004）──────────────────────────────────────────────
+b_mode:
+  allow_per_turn_switch_on_fresh_session: true

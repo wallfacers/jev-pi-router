@@ -1,0 +1,13 @@
+{
+  "_comment": "合并入 ~/.pi/agent/models.json 的对应 models[].promptCache 声明（research R5）。值为保守估计秒数；relay/opencode-go 以 jev-pi-doctor probe 实测后校准。",
+  "promptCache": {
+    "mimo/mimo-v2.6-pro": { "short": 300, "long": 3600 },
+    "mimo/mimo-v2.6-flash": { "short": 300, "long": 3600 },
+    "glm/glm-5.3": { "short": 300, "long": 3600 },
+    "glm/glm-5.3-flash": { "short": 300, "long": 3600 },
+    "deepseek/deepseek-flash": { "short": 300, "long": 3600 },
+    "deepseek/deepseek-v4-pro": { "short": 300, "long": 3600 },
+    "relay/cmd-deepseek-v4.1-flash": { "short": 300, "long": 3600 },
+    "opencode-go/deepseek-flash": { "short": 300, "long": 3600 }
+  }
+}

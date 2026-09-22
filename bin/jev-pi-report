@@ -1,0 +1,25 @@
+#!/usr/bin/env python3
+"""jev-pi-report — 决策日志报表（contracts/decision-cli.md report 节）。"""
+
+import argparse
+import json
+import os
+import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+
+from jev_pi_router.report import aggregate, render          # noqa: E402
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(prog="jev-pi-report")
+    parser.add_argument("--days", type=int, default=None)
+    parser.add_argument("--json", action="store_true")
+    args = parser.parse_args()
+    stats = aggregate(days=args.days)
+    print(json.dumps(stats, ensure_ascii=False, indent=1) if args.json else render(stats))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

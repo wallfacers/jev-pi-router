@@ -1,0 +1,63 @@
+"""决策日志单测（contracts/decision-log-schema.md 三条不变量）。"""
+
+import json
+
+import pytest
+
+from jev_pi_router.log import LogError, append_decision, iter_records, session_hash, validate_record
+
+
+def base_record(**overrides):
+    record = {
+        "v": 1, "decision_id": "abc", "ts": "2026-09-22T10:00:00+08:00",
+        "session_id_hash": session_hash("session-1"), "task_ref": "t1", "role": "implement",
+        "task_class": "implement", "complexity": "low",
+        "chosen": {"vendor": "deepseek", "model": "deepseek-flash", "api_ref": "deepseek/deepseek-flash", "pool": "flash"},
+        "review_plan": {"code_reviewer": None, "plan_reviewers": [], "degrade": False},
+        "engine": "rules", "fail_open": False, "rationale": "ok", "fallback_events": [],
+    }
+    record.update(overrides)
+    return record
+
+
+def test_append_and_iterate(isolated_home):
+    path = append_decision(base_record())
+    assert path.exists()
+    records = list(iter_records())
+    assert len(records) == 1 and records[0]["decision_id"] == "abc"
+
+
+def test_session_hash_stable_and_short():
+    assert session_hash("session-1") == session_hash("session-1")
+    assert len(session_hash("session-1")) == 12 and session_hash("session-1") != session_hash("session-2")
+    assert session_hash(None) == ""
+
+
+def test_invariant_degrade_requires_event():
+    record = base_record(review_plan={"code_reviewer": None, "plan_reviewers": [], "degrade": True})
+    with pytest.raises(LogError, match="不变量1"):
+        validate_record(record)
+    record["fallback_events"] = [{"type": "degrade_single_vendor", "trigger": "explicit",
+                                  "from_model": None, "to_model": None, "attempt": 1, "ts": ""}]
+    validate_record(record)
+
+
+def test_invariant_fail_open_requires_rules_engine():
+    with pytest.raises(LogError, match="不变量2"):
+        validate_record(base_record(engine="jev", fail_open=True))
+    validate_record(base_record(engine="rules", fail_open=True))
+
+
+def test_required_fields_present():
+    record = base_record()
+    del record["chosen"]
+    with pytest.raises(LogError, match="缺少字段"):
+        validate_record(record)
+    with pytest.raises(LogError, match="schema 版本"):
+        validate_record(base_record(v=2))
+
+
+def test_append_writes_json_line(isolated_home):
+    path = append_decision(base_record())
+    line = path.read_text(encoding="utf-8").strip().splitlines()[-1]
+    assert json.loads(line)["task_ref"] == "t1"
