@@ -57,6 +57,14 @@ def test_required_fields_present():
         validate_record(base_record(v=2))
 
 
+def test_iter_records_missing_log_does_not_create_home(isolated_home):
+    """只读路径无 mkdir 副作用：日志/目录不存在时返回空且不创建 home 目录。"""
+    home = isolated_home / "home"
+    assert not home.exists()
+    assert list(iter_records()) == []
+    assert not home.exists()
+
+
 def test_append_writes_json_line(isolated_home):
     path = append_decision(base_record())
     line = path.read_text(encoding="utf-8").strip().splitlines()[-1]

@@ -22,14 +22,17 @@ class LogError(Exception):
     pass
 
 
-def home_dir() -> Path:
+def home_dir(mkdir: bool = True) -> Path:
+    """路由 home 目录；mkdir=False 时纯只读解析（不产生创建目录副作用）。"""
     path = Path(os.environ.get("JEV_PI_ROUTER_HOME", Path.home() / ".jev-pi-router"))
-    path.mkdir(parents=True, exist_ok=True)
+    if mkdir:
+        path.mkdir(parents=True, exist_ok=True)
     return path
 
 
 def log_path() -> Path:
-    return home_dir() / "decisions.jsonl"
+    """日志路径（只读语义；写路径由 append_decision 自行创建父目录）。"""
+    return home_dir(mkdir=False) / "decisions.jsonl"
 
 
 def session_hash(session_id: str | None) -> str:
@@ -63,6 +66,7 @@ def append_decision(record: dict, path: Path | None = None) -> Path:
 
 
 def iter_records(path: Path | None = None):
+    """迭代日志记录；日志缺失时静默返回空（只读，不创建 home 目录）。"""
     target = path or log_path()
     if not target.exists():
         return

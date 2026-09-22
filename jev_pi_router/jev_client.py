@@ -15,8 +15,10 @@ import os
 import time
 import urllib.error
 import urllib.request
+from pathlib import Path
 
 DEFAULT_ENDPOINT = "https://api.typesafe.ai/v1/systemone"
+JEV_ULTRAFAST_ENV_FILE = Path("/home/wushengzhou/workspace/github/jev-ultrafast/.env")
 
 
 class JevError(Exception):
@@ -27,9 +29,39 @@ def _endpoint() -> str:
     return os.environ.get("TYPESAFE_ENDPOINT", DEFAULT_ENDPOINT)
 
 
+def _env_file_key(path: Path) -> str:
+    """从 .env 读取 TYPESAFE_API_KEY（容忍空行/注释行/引号）。"""
+    if not path.exists():
+        return ""
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        name, _, value = line.partition("=")
+        if name.strip() != "TYPESAFE_API_KEY":
+            continue
+        value = value.strip().strip('"').strip("'")
+        if value:
+            return value
+    return ""
+
+
+def _api_key() -> str:
+    """key 解析：TYPESAFE_API_KEY → AI_GATEWAY_API_KEY → jev-ultrafast/.env；
+
+    全空则抛 JevError（由 decide.py fail-open 降级），避免发空 Bearer 吃 401。
+    """
+    key = (os.environ.get("TYPESAFE_API_KEY") or os.environ.get("AI_GATEWAY_API_KEY") or "").strip()
+    if not key:
+        key = _env_file_key(JEV_ULTRAFAST_ENV_FILE)
+    if not key:
+        raise JevError("Jev key 未配置")
+    return key
+
+
 def _headers(model_id: str) -> dict:
     headers = {
-        "Authorization": f"Bearer {os.environ.get('TYPESAFE_API_KEY') or os.environ.get('AI_GATEWAY_API_KEY', '')}",
+        "Authorization": f"Bearer {_api_key()}",
         "Content-Type": "application/json",
     }
     if "ai-gateway" in _endpoint():
@@ -42,6 +74,7 @@ def _headers(model_id: str) -> dict:
 
 
 def _post(body: dict, timeout_s: float) -> dict:
+    # 注意：_headers 在构造请求前解析 key，缺失即在此抛出（不发任何 HTTP 请求）
     request = urllib.request.Request(
         _endpoint(), data=json.dumps(body).encode("utf-8"), headers=_headers(body["model"]), method="POST"
     )

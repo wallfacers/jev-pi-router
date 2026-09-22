@@ -1,0 +1,44 @@
+#!/usr/bin/env python3
+"""jev-pi-stats — 统计决策日志中各 chosen.api_ref 的调用次数（两列表格）。"""
+
+import argparse
+import os
+import sys
+from collections import Counter
+from pathlib import Path
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+
+from jev_pi_router.log import iter_records              # noqa: E402
+
+
+def count_api_refs(records) -> dict:
+    counts = Counter()
+    for record in records:
+        chosen = record.get("chosen") or {}
+        counts[chosen.get("api_ref") or "?"] += 1
+    return dict(counts)
+
+
+def render_table(counts: dict) -> str:
+    rows = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+    ref_width = max([len("api_ref")] + [len(ref) for ref, _ in rows])
+    cnt_width = max([len("count")] + [len(str(n)) for _, n in rows])
+    lines = [f'{"api_ref".ljust(ref_width)}  {"count".ljust(cnt_width)}'.rstrip()]
+    for ref, count in rows:
+        lines.append(f"{ref.ljust(ref_width)}  {str(count).ljust(cnt_width)}".rstrip())
+    return "\n".join(lines)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(prog="jev-pi-stats")
+    parser.add_argument("--path", type=Path, default=None,
+                        help="决策日志路径（默认 ~/.jev-pi-router/decisions.jsonl）")
+    args = parser.parse_args()
+    counts = count_api_refs(iter_records(args.path))
+    print(render_table(counts))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
