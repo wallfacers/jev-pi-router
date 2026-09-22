@@ -63,3 +63,84 @@ def test_quota_manual_unlock_via_request(sample_request, config_path):
                       engine="rules", config_path=config_path)
     assert "quota_unlock" in _types(response)
     assert (response["chosen"] or {}).get("vendor") == "deepseek"
+
+
+# ---- S12.1 重置卡/活动提前重置 ----
+
+def test_early_manual_unlock_overrides_future_until(sample_request, config_path):
+    """人工解锁可提前覆盖未来的 quota_until（活动提前重置）。"""
+    decide(_req(sample_request,
+                vendor_failures=[{"vendor": "deepseek", "trigger": "quota",
+                                  "quota_until": time.time() + 86400}]),
+           engine="rules", config_path=config_path)
+    response = decide(_req(sample_request, vendor_unlock=[{"vendor": "deepseek", "reason": "activity"}]),
+                      engine="rules", config_path=config_path)
+    assert "quota_unlock" in _types(response)
+    assert (response["chosen"] or {}).get("vendor") == "deepseek"
+
+
+def test_reset_card_unlock_consumes_card(sample_request, config_path):
+    """reset_card 解锁扣减 1 张卡，事件 trigger=reset_card 且带 cards_left。"""
+    from jev_pi_router.quota import QuotaRegistry
+    decide(_req(sample_request,
+                vendor_failures=[{"vendor": "deepseek", "trigger": "quota"}]),
+           engine="rules", config_path=config_path)
+    registry = QuotaRegistry()
+    registry.load()                       # 先 load 再改，避免覆盖已有封禁状态
+    registry.add_cards("deepseek", 2)
+    registry.save()
+
+    response = decide(_req(sample_request, vendor_unlock=[{"vendor": "deepseek", "reason": "reset_card"}]),
+                      engine="rules", config_path=config_path)
+    events = [e for e in response["fallback_events"] if e["type"] == "quota_unlock"]
+    assert events and events[0]["trigger"] == "reset_card"
+    assert events[0]["cards_left"] == 1
+    registry = QuotaRegistry()
+    registry.load()
+    assert registry.cards_left("deepseek") == 1
+
+
+def test_reset_card_without_cards_still_unlocks(sample_request, config_path):
+    """无卡也放行（用户在厂商侧已用卡，fail-open 不拦人），事件 cards_left=0。"""
+    decide(_req(sample_request,
+                vendor_failures=[{"vendor": "deepseek", "trigger": "quota"}]),
+           engine="rules", config_path=config_path)
+    response = decide(_req(sample_request, vendor_unlock=[{"vendor": "deepseek", "reason": "reset_card"}]),
+                      engine="rules", config_path=config_path)
+    events = [e for e in response["fallback_events"] if e["type"] == "quota_unlock"]
+    assert events and events[0]["cards_left"] == 0
+    assert (response["chosen"] or {}).get("vendor") == "deepseek"
+
+
+def test_activity_unlock_keeps_cards(sample_request, config_path):
+    """activity（活动重置）解锁不扣卡。"""
+    from jev_pi_router.quota import QuotaRegistry
+    decide(_req(sample_request,
+                vendor_failures=[{"vendor": "deepseek", "trigger": "quota"}]),
+           engine="rules", config_path=config_path)
+    registry = QuotaRegistry()
+    registry.load()
+    registry.add_cards("deepseek", 2)
+    registry.save()
+    decide(_req(sample_request, vendor_unlock=[{"vendor": "deepseek", "reason": "activity"}]),
+           engine="rules", config_path=config_path)
+    registry = QuotaRegistry()
+    registry.load()
+    assert registry.cards_left("deepseek") == 2
+
+
+def test_quota_hints_when_blocked(sample_request, config_path):
+    """quota_hints 提示自动解锁时间/重置卡余量（供主 Agent 询问用户）。"""
+    from jev_pi_router.quota import QuotaRegistry
+    registry = QuotaRegistry()
+    registry.load()
+    registry.add_cards("deepseek", 1)
+    registry.save()
+    response = decide(_req(sample_request,
+                           vendor_failures=[{"vendor": "deepseek", "trigger": "quota",
+                                             "quota_until": time.time() + 86400}]),
+                      engine="rules", config_path=config_path)
+    hints = response["quota_hints"]
+    assert hints and "deepseek" in hints[0]
+    assert "重置卡" in hints[0] and "余1张" in hints[0]
+    assert "自动解锁" in hints[0]

@@ -166,18 +166,32 @@ def cmd_quotas() -> int:
     return 0
 
 
-def cmd_unlock(vendor: str) -> int:
+def cmd_unlock(vendor: str, reason: str = "manual", key_id: str = "") -> int:
     from datetime import datetime, timezone
 
     from jev_pi_router.quota import QuotaRegistry
     registry = QuotaRegistry()
     registry.load()
-    events = registry.unlock(vendor, ts=(datetime.now(timezone.utc).astimezone()
-                                        .isoformat(timespec="seconds")))   # 与 decide 路径同格式（+08:00）
+    events = registry.unlock(vendor, reason=reason, key_id=key_id,
+                             ts=(datetime.now(timezone.utc).astimezone()
+                                 .isoformat(timespec="seconds")))   # 与 decide 路径同格式（+08:00）
     registry.save()
-    print(json.dumps({"vendor": vendor, "unlocked": bool(events), "events": events},
+    print(json.dumps({"vendor": vendor, "reason": reason, "unlocked": bool(events),
+                      "cards_left": registry.cards_left(vendor), "events": events},
                      ensure_ascii=False))
     return 0 if events else 1
+
+
+def cmd_cards(vendor: str, add: int = 0) -> int:
+    from jev_pi_router.quota import QuotaRegistry
+    registry = QuotaRegistry()
+    registry.load()
+    if add:
+        registry.add_cards(vendor, add)
+        registry.save()
+    print(json.dumps({"vendor": vendor, "cards_left": registry.cards_left(vendor)},
+                     ensure_ascii=False))
+    return 0
 
 
 def main() -> int:
@@ -186,8 +200,14 @@ def main() -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("check")
     sub.add_parser("quotas", help="查看厂商套餐额度封禁表")
-    unlock = sub.add_parser("unlock", help="人工解锁套餐额度封禁")
+    unlock = sub.add_parser("unlock", help="人工解锁套餐额度封禁（可提前覆盖 quota_until）")
     unlock.add_argument("vendor")
+    unlock.add_argument("--reason", default="manual",
+                        help="manual|reset_card|activity|…（reset_card 扣减重置卡）")
+    unlock.add_argument("--key-id", default="", help="同厂商多 key 留痕")
+    cards = sub.add_parser("cards", help="重置卡台账：查询/记入")
+    cards.add_argument("vendor")
+    cards.add_argument("--add", type=int, default=0, help="记入 N 张重置卡（负数扣减）")
     probe = sub.add_parser("probe")
     probe.add_argument("api_ref")
     probe.add_argument("--key", default=None)
@@ -201,7 +221,9 @@ def main() -> int:
     if args.command == "quotas":
         return cmd_quotas()
     if args.command == "unlock":
-        return cmd_unlock(args.vendor)
+        return cmd_unlock(args.vendor, args.reason, args.key_id)
+    if args.command == "cards":
+        return cmd_cards(args.vendor, args.add)
     extra_headers = {}
     for item in args.header or []:
         name, _, value = item.partition(":")

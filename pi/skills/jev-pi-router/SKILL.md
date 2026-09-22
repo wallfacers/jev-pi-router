@@ -46,6 +46,12 @@ description: PI 多厂商模型路由的派发纪律：强模型做计划/决策
   与 `key_id`）：该厂商**立即封禁、下次不再选中**；带 `quota_until` 到期自动解锁，否则无限期
   封禁，用户确认套餐重置后用 `vendor_unlock:[{"vendor":"..."}]` 或
   `bin/jev-pi-doctor unlock <vendor>` 解锁（`bin/jev-pi-doctor quotas` 查看封禁表）。
+  - **提前重置（活动/重置卡，S12.1）**：套餐未到重置时间但用户已通过**活动或重置卡**提前
+    重置（如 Codex 活动/重置卡）→ 用 `vendor_unlock:[{"vendor":"...","reason":"reset_card"}]`
+    （或 `reason:"activity"`）**立即解锁，无需等到 quota_until**；`reset_card` 会扣卡
+    （`bin/jev-pi-doctor cards <vendor> --add N` 记卡/查余量；无卡也放行）。决策响应的
+    `quota_hints` 会提示各封禁厂商的自动解锁时间与重置卡余量——**看到提示应主动询问用户
+    “是否使用重置卡解锁”**，用户同意后再发 `vendor_unlock`。
 - **质量升级**：实现连续 **2 轮 review 不过** → 重新派发但 `history.review_fail_count` 置 2，
   决策器会返回强模型**换厂商**的 chosen（quality_upgrade 事件自动留痕）。
 - 强模型执行失败 → 换另一强厂商（fallback_order 里的 strong 条目）。

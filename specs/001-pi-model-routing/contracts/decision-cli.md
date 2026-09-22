@@ -123,3 +123,14 @@ bin/jev-pi-doctor probe <api_ref> [--write-back]
 `request.vendor_unlock`：`[{"vendor"}]`——套餐重置后人工解锁（`quota_unlock: manual`）。
 人工解锁亦可用 `bin/jev-pi-doctor unlock <vendor>`；`bin/jev-pi-doctor quotas` 查看封禁表。
 封禁状态持久化 `~/.jev-pi-router/quotas.json`（按厂商，key_id 仅留痕不参与路由）。
+
+## 扩展字段（v1.3，重置卡/活动提前重置 S12.1）
+
+- `request.vendor_unlock[]` 项支持 `reason`（manual|reset_card|activity|…，默认 manual，写入
+  事件 `trigger`）与 `key_id`（留痕）。**人工解锁任何时刻可提前覆盖 `quota_until`**——覆盖
+  "活动提前重置/不到重置时间即重置"的场景。
+- `reason:"reset_card"` 扣减该厂商重置卡余额（有则扣 1 张，无则放行，fail-open 不拦人），
+  事件附 `cards_left`。重置卡台账持久化 `quotas.json.cards`，
+  `bin/jev-pi-doctor cards <vendor> --add N` 记入/查询（负数扣减）。
+- `response.quota_hints`：存在封禁厂商时给出提示字符串数组（封禁原因/自动解锁时间/重置卡
+  余量），供主 Agent 主动询问用户"是否用重置卡解锁"。

@@ -60,12 +60,13 @@ def decide(request: dict, engine: str = "auto", config_path=None, timeout_ms: in
     for success in successes:
         fallback_events.extend(registry.record_success(success["vendor"], ts=ts))
 
-    # 人工解锁：套餐重置后确认（quota_unlock: manual）
+    # 人工解锁：套餐重置/重置卡/活动提前重置（quota_unlock: <reason>，可提前覆盖 quota_until）
     unlocks = request.get("vendor_unlock") or []
     if isinstance(unlocks, dict):
         unlocks = [unlocks]
     for item in unlocks:
-        fallback_events.extend(quotas.unlock(item["vendor"], ts=ts))
+        fallback_events.extend(quotas.unlock(item["vendor"], reason=item.get("reason", "manual"),
+                                             key_id=item.get("key_id", ""), ts=ts))
 
     # 故障回报：顶层 vendor_failures 为准（skill 模板 v2），兼容旧 history.vendor_failures
     failures = request.get("vendor_failures") or history.get("vendor_failures") or []
@@ -184,6 +185,7 @@ def decide(request: dict, engine: str = "auto", config_path=None, timeout_ms: in
         "fail_open": fail_open,
         "rationale": rationale[:200],
         "fallback_events": fallback_events,   # 观测：熔断/升级/降级事件随响应体回带（S4）
+        "quota_hints": quotas.hints(),        # 封禁厂商提示：自动解锁时间/重置卡余量（S12.1）
     }
 
     record = {
