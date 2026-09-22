@@ -167,10 +167,13 @@ def cmd_quotas() -> int:
 
 
 def cmd_unlock(vendor: str) -> int:
+    from datetime import datetime, timezone
+
     from jev_pi_router.quota import QuotaRegistry
     registry = QuotaRegistry()
     registry.load()
-    events = registry.unlock(vendor, ts=time.strftime("%Y-%m-%dT%H:%M:%S%z"))
+    events = registry.unlock(vendor, ts=(datetime.now(timezone.utc).astimezone()
+                                        .isoformat(timespec="seconds")))   # 与 decide 路径同格式（+08:00）
     registry.save()
     print(json.dumps({"vendor": vendor, "unlocked": bool(events), "events": events},
                      ensure_ascii=False))
