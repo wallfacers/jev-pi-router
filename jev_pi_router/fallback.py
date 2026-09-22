@@ -91,7 +91,7 @@ class BreakerRegistry:
         breaker = self.state.setdefault(vendor, Breaker())
         self._transition(vendor)
         events = []
-        if breaker.state == "half_open":
+        if breaker.state != "closed":       # half_open 正常闭合；open 下成功回报=强制闭合
             events.append(make_event("breaker_close", "explicit", ts=ts))
         breaker.state = "closed"
         breaker.consecutive_failures = 0

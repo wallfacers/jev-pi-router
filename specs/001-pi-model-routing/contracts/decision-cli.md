@@ -100,3 +100,26 @@ bin/jev-pi-doctor probe <api_ref> [--write-back]
 | none | 两者皆无 |
 
 `--write-back` 将结果写回 `router.config.yaml` 对应条目的 `cache_passthrough`（影响路由权重排序：full > partial > unknown > none）。exit 0；探针请求失败 exit 1 并输出 error 字段。
+
+## 扩展字段（v1.1，e2e 测试修订）
+
+- `request.vendor_failures`（顶层，**canonical**）：`[{"vendor","trigger"}]`——调用方上报的厂商
+  故障，驱动熔断/转移。兼容旧位置 `history.vendor_failures`（双读，顶层优先）。
+- `request.vendor_success`（顶层）：`[{"vendor"}]`——执行成功回报，闭合熔断并产生
+  `breaker_close` 事件。
+- `response.fallback_events`：本次决策产生的事件数组（breaker_open / breaker_close /
+  quality_upgrade / degrade_single_vendor 等），随响应体回带，便于调用方观测，
+  无需翻查 decisions.jsonl。
+
+## 扩展字段（v1.2，套餐额度场景 S12）
+
+`request.vendor_failures[].trigger` 语义分流：
+- `"rate_limit"`：并发/瞬时 429 → 重试即可，**不计入熔断、不封禁**；
+- `"quota"`：套餐/周限额额度尽 → **立即封禁该厂商**（`quota_block` 事件，一次即封，不等 3 连败），
+  可带 `quota_until`（epoch 秒，到期自动解锁 `quota_unlock: auto`）与 `key_id`（同厂商多 key 留痕）；
+  不带 `quota_until` = 无限期封禁，需人工解锁；
+- 其它（timeout / 5xx / auth / explicit）→ 熔断计数（原行为）。
+
+`request.vendor_unlock`：`[{"vendor"}]`——套餐重置后人工解锁（`quota_unlock: manual`）。
+人工解锁亦可用 `bin/jev-pi-doctor unlock <vendor>`；`bin/jev-pi-doctor quotas` 查看封禁表。
+封禁状态持久化 `~/.jev-pi-router/quotas.json`（按厂商，key_id 仅留痕不参与路由）。

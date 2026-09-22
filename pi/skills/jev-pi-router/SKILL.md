@@ -24,8 +24,9 @@ description: PI 多厂商模型路由的派发纪律：强模型做计划/决策
    ```bash
    echo '{"task_ref":"<id>","task_brief":"<≤2000字摘要>","role":"implement|review|plan|...",
          "implementer":{"vendor":"<产出者厂商>","model":"<...>"}或null,
-         "risk_tags":[],"history":{"review_fail_count":0,"previous_models":[],
-         "vendor_failures":[{"vendor":"<故障厂商>","trigger":"timeout"}]}}' \
+         "risk_tags":[],"history":{"review_fail_count":0,"previous_models":[]},
+         "vendor_failures":[{"vendor":"<故障厂商>","trigger":"timeout"}],
+         "vendor_success":[{"vendor":"<刚成功厂商>"}]}' \
      | ~/workspace/github/jev-pi-router/.venv/bin/python \
        ~/workspace/github/jev-pi-router/bin/jev-pi-decide \
        --config ~/workspace/github/jev-pi-router/router.config.yaml
@@ -36,8 +37,15 @@ description: PI 多厂商模型路由的派发纪律：强模型做计划/决策
 
 ## 双轨兜底（FR-009/010）
 
-- **故障转移**：执行者报错（超时/配额/限流/5xx）→ 把故障写入 `vendor_failures` 重派
-  `fallback_order[0]`；主会话无感继续。同一厂商连续失败由决策器自动熔断。
+- **故障转移**：执行者报错（超时/配额/限流/5xx）→ 把故障写入**顶层** `vendor_failures` 重派
+  `fallback_order[0]`；主会话无感继续。同一厂商连续失败由决策器自动熔断；执行**成功**后
+  下次请求带顶层 `vendor_success` 闭合熔断（breaker_close 留痕）。
+- **429 分诊（重要）**：① 并发/瞬时限流（"rate limit"/"concurrent"/retry-after 秒级）→
+  `trigger:"rate_limit"`，重试即可，不计失败不封禁；② 套餐/周限额额度尽（"quota"/"billing"/
+  "usage limit"/`x-ratelimit-reset` 跨天）→ `trigger:"quota"`（可带 `quota_until` 重置时间戳
+  与 `key_id`）：该厂商**立即封禁、下次不再选中**；带 `quota_until` 到期自动解锁，否则无限期
+  封禁，用户确认套餐重置后用 `vendor_unlock:[{"vendor":"..."}]` 或
+  `bin/jev-pi-doctor unlock <vendor>` 解锁（`bin/jev-pi-doctor quotas` 查看封禁表）。
 - **质量升级**：实现连续 **2 轮 review 不过** → 重新派发但 `history.review_fail_count` 置 2，
   决策器会返回强模型**换厂商**的 chosen（quality_upgrade 事件自动留痕）。
 - 强模型执行失败 → 换另一强厂商（fallback_order 里的 strong 条目）。

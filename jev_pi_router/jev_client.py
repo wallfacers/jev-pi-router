@@ -1,7 +1,8 @@
 """Jev typed-choice 客户端（FR-005）。
 
 请求协议复用 jev-ultrafast/jev_ultrafast/model.py 的网关适配：
-- POST TYPESAFE_ENDPOINT（默认 TypeSafe 原生；指向 ai-gateway 时追加协议头）
+- POST TYPESAFE_ENDPOINT（endpoint/model/key 同源解析：进程环境 > jev-ultrafast/.env；
+  指向 ai-gateway 时追加协议头，如 .env 的 https://ai-gateway.vercel.sh + typesafe-ai/jev 组合）
 - body: {model, state, questions:{id: {type:"choice", criteria, instructions}}}
 - 响应: {answers:{id:{choice, probabilities, confidence}}}
 决策调用是独立 evaluation 请求（max_tokens:0 语义），不进入任何对话上下文。
@@ -26,19 +27,23 @@ class JevError(Exception):
 
 
 def _endpoint() -> str:
-    return os.environ.get("TYPESAFE_ENDPOINT", DEFAULT_ENDPOINT)
+    return _env("TYPESAFE_ENDPOINT") or DEFAULT_ENDPOINT
 
 
-def _env_file_key(path: Path) -> str:
-    """从 .env 读取 TYPESAFE_API_KEY（容忍空行/注释行/引号）。"""
+def _model_id() -> str:
+    return _env("TYPESAFE_MODEL") or "jev-latest"
+
+
+def _env_file_value(name: str, path: Path) -> str:
+    """从 .env 读取指定变量（容忍空行/注释行/引号，同名取首个）。"""
     if not path.exists():
         return ""
     for line in path.read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
-        name, _, value = line.partition("=")
-        if name.strip() != "TYPESAFE_API_KEY":
+        var, _, value = line.partition("=")
+        if var.strip() != name:
             continue
         value = value.strip().strip('"').strip("'")
         if value:
@@ -46,14 +51,24 @@ def _env_file_key(path: Path) -> str:
     return ""
 
 
+def _env(name: str) -> str:
+    """endpoint/model 统一解析：进程环境变量优先，回落 jev-ultrafast/.env。
+
+    endpoint/model/key 必须来自同一套凭据体系（.env 的 gateway 组合是配套的），
+    避免"gateway key 打原生端点"式错配（S3 401 根因）。
+    """
+    return (os.environ.get(name) or _env_file_value(name, JEV_ULTRAFAST_ENV_FILE) or "").strip()
+
+
 def _api_key() -> str:
     """key 解析：TYPESAFE_API_KEY → AI_GATEWAY_API_KEY → jev-ultrafast/.env；
 
     全空则抛 JevError（由 decide.py fail-open 降级），避免发空 Bearer 吃 401。
     """
-    key = (os.environ.get("TYPESAFE_API_KEY") or os.environ.get("AI_GATEWAY_API_KEY") or "").strip()
+    key = (os.environ.get("TYPESAFE_API_KEY") or "").strip() \
+        or (os.environ.get("AI_GATEWAY_API_KEY") or "").strip()
     if not key:
-        key = _env_file_key(JEV_ULTRAFAST_ENV_FILE)
+        key = _env_file_value("TYPESAFE_API_KEY", JEV_ULTRAFAST_ENV_FILE)
     if not key:
         raise JevError("Jev key 未配置")
     return key
@@ -143,7 +158,7 @@ def decide(task_brief: str, risk_tags: list, implement_candidates: list, reviewe
         }
 
     body = {
-        "model": os.environ.get("TYPESAFE_MODEL", "jev-latest"),
+        "model": _model_id(),
         "state": {"task_brief": task_brief[:2000], "risk_tags": risk_tags or []},
         "questions": questions,
     }

@@ -5,7 +5,7 @@ import urllib.request
 import pytest
 
 from jev_pi_router import jev_client
-from jev_pi_router.jev_client import JevError, _api_key, _headers
+from jev_pi_router.jev_client import JevError, _api_key, _endpoint, _headers, _model_id
 
 
 @pytest.fixture()
@@ -66,3 +66,65 @@ def test_decide_missing_key_raises_cleanly_without_request(no_env_keys, tmp_path
     with pytest.raises(JevError, match="Jev key 未配置"):
         jev_client.decide("brief", [], [], [], timeout_ms=2000)
     assert calls == []
+
+
+# ---- S3 修复：endpoint/model 与 key 同源解析（进程环境 > .env 文件） ----
+
+def test_endpoint_and_model_fall_back_to_env_file(no_env_keys, tmp_path):
+    no_env_keys.delenv("TYPESAFE_ENDPOINT", raising=False)
+    no_env_keys.delenv("TYPESAFE_MODEL", raising=False)
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "TYPESAFE_ENDPOINT=https://ai-gateway.example/v4/ai/evaluation-model\n"
+        "TYPESAFE_MODEL=typesafe-ai/jev\n",
+        encoding="utf-8",
+    )
+    no_env_keys.setenv("TYPESAFE_API_KEY", "sk-env")   # _headers 会解析 key
+    no_env_keys.setattr(jev_client, "JEV_ULTRAFAST_ENV_FILE", env_file)
+    assert _endpoint() == "https://ai-gateway.example/v4/ai/evaluation-model"
+    assert _model_id() == "typesafe-ai/jev"
+    headers = _headers("typesafe-ai/jev")
+    assert headers["ai-model-id"] == "typesafe-ai/jev"          # gateway 协议头带上
+    assert headers["ai-gateway-protocol-version"] == "0.0.1"
+
+
+def test_process_env_overrides_env_file(no_env_keys, tmp_path):
+    env_file = tmp_path / ".env"
+    env_file.write_text("TYPESAFE_ENDPOINT=https://file.example/x\nTYPESAFE_MODEL=file-model\n", encoding="utf-8")
+    no_env_keys.setattr(jev_client, "JEV_ULTRAFAST_ENV_FILE", env_file)
+    no_env_keys.setenv("TYPESAFE_ENDPOINT", "https://env.example/y")
+    no_env_keys.setenv("TYPESAFE_MODEL", "env-model")
+    assert _endpoint() == "https://env.example/y"
+    assert _model_id() == "env-model"
+
+
+def test_native_endpoint_has_no_gateway_headers(no_env_keys, tmp_path):
+    no_env_keys.setenv("TYPESAFE_API_KEY", "sk-env")
+    no_env_keys.delenv("TYPESAFE_ENDPOINT", raising=False)
+    no_env_keys.setattr(jev_client, "JEV_ULTRAFAST_ENV_FILE", tmp_path / "missing.env")
+    headers = _headers("jev-latest")
+    assert "ai-gateway-protocol-version" not in headers
+
+
+def test_api_key_precedence_pinned(no_env_keys, tmp_path):
+    """钉死顺序：TYPESAFE_API_KEY > AI_GATEWAY_API_KEY > .env 文件（P2）。"""
+    env_file = tmp_path / ".env"
+    env_file.write_text("TYPESAFE_API_KEY=sk-file\n", encoding="utf-8")
+    no_env_keys.setattr(jev_client, "JEV_ULTRAFAST_ENV_FILE", env_file)
+    no_env_keys.setenv("AI_GATEWAY_API_KEY", "sk-gateway")
+    no_env_keys.setenv("TYPESAFE_API_KEY", "sk-env")
+    assert _api_key() == "sk-env"
+    no_env_keys.delenv("TYPESAFE_API_KEY")
+    assert _api_key() == "sk-gateway"
+
+
+def test_api_key_whitespace_only_env_falls_through(no_env_keys, tmp_path):
+    """空白 env 值不得拦截后续优先级（P2：逐值 strip 后再判空）。"""
+    env_file = tmp_path / ".env"
+    env_file.write_text("TYPESAFE_API_KEY=sk-file\n", encoding="utf-8")
+    no_env_keys.setattr(jev_client, "JEV_ULTRAFAST_ENV_FILE", env_file)
+    no_env_keys.setenv("TYPESAFE_API_KEY", "   ")
+    no_env_keys.setenv("AI_GATEWAY_API_KEY", "  sk-gateway  ")
+    assert _api_key() == "sk-gateway"
+    no_env_keys.delenv("AI_GATEWAY_API_KEY")
+    assert _api_key() == "sk-file"

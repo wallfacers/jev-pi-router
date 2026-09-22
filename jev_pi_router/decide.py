@@ -5,7 +5,8 @@ Jev 覆盖（auto/jev，失败 fail-open）→ 质量升级判定 → review 配
 写决策日志 → 返回 response。
 
 扩展字段（契约向后兼容的可选项）：
-- request["vendor_failures"]: [{"vendor","trigger"}] —— 调用方上报的厂商故障，
+- request["vendor_failures"]: [{"vendor","trigger"}] —— 调用方上报的厂商故障
+  （顶层为准；兼容旧 history.vendor_failures）；request["vendor_success"] 上报成功闭合熔断。
   用于熔断计数与 fault_transfer 事件（一次性 CLI 的状态来源）。
 """
 
@@ -17,6 +18,7 @@ from datetime import datetime, timezone
 from . import jev_client, rules
 from .config import ConfigError, RouterConfig, load_config
 from .fallback import BreakerRegistry, make_event, quality_escalated
+from .quota import QuotaRegistry
 from .log import append_decision, session_hash
 
 REQUIRED_REQUEST = ("task_ref", "task_brief", "role")
@@ -45,23 +47,55 @@ def decide(request: dict, engine: str = "auto", config_path=None, timeout_ms: in
     registry = BreakerRegistry(threshold=cfg.fallback.breaker_failures,
                                cooldown_sec=cfg.fallback.breaker_cooldown_sec)
     registry.load()
-    for failure in request.get("vendor_failures") or []:
-        trigger = failure.get("trigger", "explicit")
-        fallback_events.extend(registry.record_failure(failure["vendor"], trigger, ts=ts))
-    registry.save()
-    if fallback_events:
-        rationale_parts.append("熔断事件已记录")
-
+    quotas = QuotaRegistry()
+    quotas.load()
     history = request.get("history") or {}
+
+    fallback_events.extend(quotas.expire_due(ts=ts))    # 到期套餐额度自动解锁（quota_unlock: auto）
+
+    # 成功回报：闭合熔断（breaker_close 事件，CLI 路径可达）
+    successes = request.get("vendor_success") or []
+    if isinstance(successes, dict):
+        successes = [successes]
+    for success in successes:
+        fallback_events.extend(registry.record_success(success["vendor"], ts=ts))
+
+    # 人工解锁：套餐重置后确认（quota_unlock: manual）
+    unlocks = request.get("vendor_unlock") or []
+    if isinstance(unlocks, dict):
+        unlocks = [unlocks]
+    for item in unlocks:
+        fallback_events.extend(quotas.unlock(item["vendor"], ts=ts))
+
+    # 故障回报：顶层 vendor_failures 为准（skill 模板 v2），兼容旧 history.vendor_failures
+    failures = request.get("vendor_failures") or history.get("vendor_failures") or []
+    if isinstance(failures, dict):
+        failures = [failures]
+    for failure in failures:
+        trigger = failure.get("trigger", "explicit")
+        if trigger == "quota":            # 套餐/周限额额度尽 → 立即封禁，不计熔断（S12）
+            fallback_events.extend(quotas.block(
+                failure["vendor"], quota_until=float(failure.get("quota_until") or 0.0),
+                reason=failure.get("reason", "quota"), key_id=failure.get("key_id", ""), ts=ts))
+        elif trigger == "rate_limit":     # 并发/瞬时 429 → 重试即可，不计不封
+            continue
+        else:
+            fallback_events.extend(registry.record_failure(failure["vendor"], trigger, ts=ts))
+    if fallback_events:
+        rationale_parts.append("熔断/额度事件已记录")
+
     previous_refs = set(history.get("previous_models") or [])
     producer = request.get("implementer") or None        # review 场景：产出者 {vendor, model}
 
     def available(pool):
         return [e for e in rules.order_pool(pool, cfg.auto.enabled)
-                if registry.available(e.vendor) and e.api_ref not in previous_refs]
+                if registry.available(e.vendor) and quotas.available(e.vendor)
+                and e.api_ref not in previous_refs]
 
     strong = available(cfg.strong) or rules.order_pool(cfg.strong, cfg.auto.enabled)
     flash = available(cfg.flash) or rules.order_pool(cfg.flash, cfg.auto.enabled)
+    registry.save()      # 持久化 available() 触发的 open→half_open 迁移（S4 观测缺口修复）
+    quotas.save()
 
     # ── 质量升级（FR-010）──────────────────────────────────────
     escalated = quality_escalated(int(history.get("review_fail_count", 0)), cfg.fallback.quality_review_fails)
@@ -125,12 +159,11 @@ def decide(request: dict, engine: str = "auto", config_path=None, timeout_ms: in
         if degrade:
             fallback_events.append(make_event("degrade_single_vendor", "explicit", ts=ts))
             rationale_parts.append("强池仅单厂商可用，review 降级（已标记）")
-        if reviewer_ref and not rules.pairing_valid(reviewer_ref, producer):
+        if reviewer_ref and not degrade and not rules.pairing_valid(reviewer_ref, producer):
             corrected = True
-    if corrected or (producer and not review_plan["code_reviewer"] and not review_plan["plan_reviewers"]
-                     and not review_plan["degrade"]):
-        if not review_plan["degrade"]:
-            corrected = True
+    if (producer and not review_plan["code_reviewer"] and not review_plan["plan_reviewers"]
+            and not review_plan["degrade"]):
+        corrected = True
     if corrected:
         rationale_parts.insert(0, "[pairing-corrected]")
 
@@ -150,6 +183,7 @@ def decide(request: dict, engine: str = "auto", config_path=None, timeout_ms: in
         "engine": engine_used,
         "fail_open": fail_open,
         "rationale": rationale[:200],
+        "fallback_events": fallback_events,   # 观测：熔断/升级/降级事件随响应体回带（S4）
     }
 
     record = {
