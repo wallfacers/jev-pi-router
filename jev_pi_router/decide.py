@@ -87,6 +87,12 @@ def decide(request: dict, engine: str = "auto", config_path=None, timeout_ms: in
 
     previous_refs = set(history.get("previous_models") or [])
     producer = request.get("implementer") or None        # review 场景：产出者 {vendor, model}
+    if producer and not producer.get("family"):
+        # 002 R3：按 api_ref 从两池解析 producer 的 family 注入；查不到 = 独立条目（向后兼容）
+        prod_ref = producer.get("api_ref") or f"{producer.get('vendor')}/{producer.get('model')}"
+        fam_entry = next((e for e in cfg.strong + cfg.flash if e.api_ref == prod_ref), None)
+        if fam_entry is not None:
+            producer = {**producer, "family": fam_entry.family}
 
     def available(pool):
         return [e for e in rules.order_pool(pool, cfg.auto.enabled)
@@ -122,7 +128,8 @@ def decide(request: dict, engine: str = "auto", config_path=None, timeout_ms: in
 
     # ── Jev 覆盖（FR-005；失败 fail-open，FR-006）────────────────
     if engine in ("auto", "jev") and not escalated:
-        reviewer_pool = [e for e in strong if not producer or e.vendor != producer.get("vendor")]
+        reviewer_pool = [e for e in strong if not producer
+                         or (e.vendor != producer.get("vendor") and not rules.same_origin(e, producer))]
         try:
             jev = jev_client.decide(
                 request["task_brief"], request.get("risk_tags") or [],
@@ -147,7 +154,8 @@ def decide(request: dict, engine: str = "auto", config_path=None, timeout_ms: in
         rationale_parts.append("规则引擎模式（离线）")
 
     # ── review 配对（FR-007/008；硬约束后置修正）─────────────────
-    review_plan = {"code_reviewer": None, "plan_reviewers": [], "degrade": False, "implementer": producer}
+    review_plan = {"code_reviewer": None, "plan_reviewers": [], "degrade": False,
+                   "degrade_reason": "", "implementer": producer}
     corrected = False
     if producer:
         allow_degrade = cfg.review.degrade_to_single_vendor
@@ -158,8 +166,14 @@ def decide(request: dict, engine: str = "auto", config_path=None, timeout_ms: in
             review_plan["code_reviewer"] = reviewer_ref
         review_plan["degrade"] = degrade
         if degrade:
-            fallback_events.append(make_event("degrade_single_vendor", "explicit", ts=ts))
-            rationale_parts.append("强池仅单厂商可用，review 降级（已标记）")
+            # 002 R2/R8 归因唯一：层级②同源兜底必为厂商异源、层级③单厂商降级必为同厂商
+            reason = ("same_origin" if (reviewer_ref or {}).get("vendor") != producer.get("vendor")
+                      else "single_vendor")
+            review_plan["degrade_reason"] = reason
+            fallback_events.append(make_event("degrade_same_origin" if reason == "same_origin"
+                                              else "degrade_single_vendor", "explicit", ts=ts))
+            rationale_parts.append("真异源候选枯竭，同源模型兜底复核（已标记）" if reason == "same_origin"
+                                   else "强池仅单厂商可用，review 降级（已标记）")
         if reviewer_ref and not degrade and not rules.pairing_valid(reviewer_ref, producer):
             corrected = True
     if (producer and not review_plan["code_reviewer"] and not review_plan["plan_reviewers"]

@@ -48,6 +48,32 @@ def test_invariant_fail_open_requires_rules_engine():
     validate_record(base_record(engine="rules", fail_open=True))
 
 
+# ── 002 R8：不变量1 扩展（同源降级事件留痕，向后兼容）─────────────────────────
+
+def test_invariant_degrade_accepts_same_origin_event():
+    """degrade=true + degrade_same_origin 事件 ⇒ 通过（002 FR-004 兜底留痕）。"""
+    validate_record(base_record(
+        review_plan={"code_reviewer": None, "plan_reviewers": [], "degrade": True,
+                     "degrade_reason": "same_origin"},
+        fallback_events=[{"type": "degrade_same_origin", "trigger": "explicit", "ts": ""}]))
+
+
+def test_invariant_degrade_still_rejects_silent():
+    """degrade=true 但无任何降级事件 ⇒ 仍拒绝（无静默降级语义不放松）。"""
+    with pytest.raises(LogError, match="不变量1"):
+        validate_record(base_record(
+            review_plan={"code_reviewer": None, "plan_reviewers": [], "degrade": True,
+                         "degrade_reason": "same_origin"},
+            fallback_events=[{"type": "quota_block", "trigger": "quota", "ts": ""}]))
+
+
+def test_legacy_record_without_degrade_reason_replays():
+    """历史记录（无 degrade_reason 字段、仅 degrade_single_vendor）重放校验不报错（R8 兼容）。"""
+    validate_record(base_record(
+        review_plan={"code_reviewer": None, "plan_reviewers": [], "degrade": True},
+        fallback_events=[{"type": "degrade_single_vendor", "trigger": "explicit", "ts": ""}]))
+
+
 def test_required_fields_present():
     record = base_record()
     del record["chosen"]

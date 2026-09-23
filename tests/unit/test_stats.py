@@ -68,3 +68,15 @@ def test_counts_records_from_default_log_path(isolated_home):
 def test_missing_api_ref_falls_back_to_question_mark():
     records = [{"chosen": {"vendor": "x"}}, {"chosen": None}, {}]
     assert stats.count_api_refs(records) == {"?": 3}
+
+
+def test_qianwenai_counted_as_regular_vendor(isolated_home):
+    """002 FR-009：qianwenai 作为普通厂商进入统计分组；无 qianwenai 数据时零值正常（上方空日志用例覆盖）。"""
+    path = log_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines = [json.dumps(rec("qianwenai/qwen3.8-flash")), json.dumps(rec("qianwenai/qwen3.8-flash")),
+             json.dumps(rec("glm/glm-5.3"))]
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    counts = stats.count_api_refs(stats.iter_records())
+    assert counts == {"qianwenai/qwen3.8-flash": 2, "glm/glm-5.3": 1}
+    assert stats.render_table(counts).splitlines()[1].startswith("qianwenai/qwen3.8-flash")

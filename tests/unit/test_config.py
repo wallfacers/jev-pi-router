@@ -24,7 +24,9 @@ decision_engine: {fail_open: true}
 
 def test_load_valid(config_path):
     cfg = load_config(config_path)
-    assert len(cfg.strong) == 2 and len(cfg.flash) == 4
+    # 计数为下限语义：001 FR-013"增删厂商只改配置"，示例池随特性扩容（002 起 4/6）
+    assert len(cfg.strong) >= 2 and len(cfg.flash) >= 4
+    assert {e.api_ref for e in cfg.strong} >= {"mimo/mimo-v2.6-pro", "glm/glm-5.3"}
     assert cfg.roles["implement"] == "flash"
     assert cfg.engine.fail_open is True
     assert cfg.fallback.quality_review_fails <= cfg.review.max_rounds
@@ -77,3 +79,60 @@ def test_bad_cache_passthrough_rejected(tmp_path):
 def test_missing_file_rejected(tmp_path):
     with pytest.raises(ConfigError, match="不存在"):
         load_config(tmp_path / "nope.yaml")
+
+
+# ── 002：family 同源组字段（contracts/config-schema.md §1、R1）──────────────
+
+FAMILY_CFG = """
+strong_pool:
+  - {vendor: glm, model: glm-5.3, api_ref: glm/glm-5.3, family: glm-5.3}
+  - {vendor: qianwenai, model: glm-5.3, api_ref: qianwenai/glm-5.3, family: glm-5.3}
+  - {vendor: qianwenai, model: broken, api_ref: qianwenai/broken, family: 123}
+  - {vendor: qianwenai, model: emptyfam, api_ref: qianwenai/emptyfam, family: ""}
+flash_pool:
+  - {vendor: deepseek, model: deepseek-flash, api_ref: deepseek/deepseek-flash}
+roles: {implement: flash}
+decision_engine: {fail_open: true}
+"""
+
+
+def test_family_declared_parsed(tmp_path):
+    cfg = load_config(write_cfg(tmp_path, FAMILY_CFG))
+    by_ref = {e.api_ref: e for e in cfg.strong}
+    assert by_ref["glm/glm-5.3"].family == "glm-5.3"
+    assert by_ref["qianwenai/glm-5.3"].family == "glm-5.3"
+
+
+def test_family_tolerant_defaults(tmp_path):
+    cfg = load_config(write_cfg(tmp_path, FAMILY_CFG))
+    by_ref = {e.api_ref: e for e in cfg.strong}
+    assert by_ref["qianwenai/broken"].family == ""       # 非字符串容错为空，不报 ConfigError
+    assert by_ref["qianwenai/emptyfam"].family == ""     # 显式空串 = 独立
+    assert cfg.flash[0].family == ""               # 未声明条目缺省空
+
+
+def test_as_ref_carries_family_only_when_present(tmp_path):
+    cfg = load_config(write_cfg(tmp_path, FAMILY_CFG))
+    refs = {e.api_ref: e.as_ref() for e in cfg.strong + cfg.flash}
+    assert refs["glm/glm-5.3"]["family"] == "glm-5.3"
+    assert "family" not in refs["qianwenai/broken"]
+    assert "family" not in refs["deepseek/deepseek-flash"]
+
+
+def test_legacy_config_without_family_unchanged(tmp_path):
+    cfg = load_config(write_cfg(tmp_path, BASE))
+    assert all(e.family == "" for e in cfg.strong + cfg.flash)   # R1 兼容承诺：旧配置零变化
+
+
+def test_promptcache_manifest_covers_all_pool_entries():
+    """002 data-model 一致性约束 4：promptcache 清单键集合 ⊇ 示例池全部 api_ref。"""
+    import json
+    from pathlib import Path
+
+    import yaml
+
+    root = Path(__file__).resolve().parents[2]
+    data = yaml.safe_load((root / "router.config.yaml.example").read_text(encoding="utf-8"))
+    refs = {item["api_ref"] for pool in ("strong_pool", "flash_pool") for item in data.get(pool) or []}
+    keys = set(json.loads((root / "pi/models.promptcache.json").read_text(encoding="utf-8"))["promptCache"])
+    assert refs <= keys

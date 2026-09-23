@@ -22,6 +22,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(
 import yaml                                             # noqa: E402
 
 PI_MODELS_JSON = os.path.expanduser("~/.pi/agent/models.json")
+PROMPTCACHE_JSON = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                "pi", "models.promptcache.json")
 PROBE_UA = "claude-cli/2.0.14 (external, cli)"   # Cloudflare 拦截 python-urllib 默认 UA（error 1010）
 LONG_PREFIX = ("你是一个代码评审助手。以下是项目约定的详细上下文，包含目录结构、编码规范、"
                "测试要求与发布流程。请在回答任何问题前完整阅读并遵循这些约定。") * 40  # ≥1000 tokens
@@ -32,17 +34,57 @@ def load_pi_models() -> dict:
         return json.load(fh).get("providers", {})
 
 
+def _strip_channel_prefix(model: str) -> str:
+    """剥离已知渠道前缀得到底层模型名（002 R9/A1：前缀白名单固定，避免自由发挥）。"""
+    for prefix in ("cmd-",):
+        if model.startswith(prefix):
+            return model[len(prefix):]
+    return model
+
+
+def _check_warnings(entries: list) -> list:
+    """002 R9 警告级体检项（不改退出码）：① promptcache 清单缺口；② 疑似同源 family 不一致/一方未声明。"""
+    warnings = []
+    try:
+        with open(PROMPTCACHE_JSON, encoding="utf-8") as fh:
+            cache_keys = set(json.load(fh).get("promptCache") or {})
+    except (OSError, json.JSONDecodeError):
+        cache_keys = set()
+        warnings.append("WARN 无法读取 pi/models.promptcache.json 清单")
+    for item in entries:
+        if item["api_ref"] not in cache_keys:
+            warnings.append(f"WARN {item['api_ref']} 缺少缓存声明清单条目")
+    by_base = {}
+    for item in entries:
+        by_base.setdefault(_strip_channel_prefix(item.get("model") or ""), []).append(item)
+    for group in by_base.values():
+        if len(group) < 2:
+            continue
+        fams = {(item.get("family") or "") for item in group}
+        declared = fams - {""}
+        # 双方均未声明 family 属"无声明可对比"，不告警（避免同名巧合噪音）；一旦有声明则要求组内统一
+        if declared and fams != declared:
+            warnings.append("WARN 疑似同源 family 未声明/不一致: " + " 与 ".join(i["api_ref"] for i in group))
+        elif len(declared) > 1:
+            warnings.append("WARN 疑似同源 family 不一致: " + " 与 ".join(i["api_ref"] for i in group))
+    return warnings
+
+
 def cmd_check(config_path: str) -> int:
     providers = load_pi_models()
     raw = yaml.safe_load(open(config_path, encoding="utf-8")) or {}
     missing = []
+    entries = []
     for pool in ("strong_pool", "flash_pool"):
         for item in raw.get(pool) or []:
+            entries.append(item)
             api_ref = item["api_ref"]
             provider, _, model = api_ref.partition("/")
             if provider not in providers or not any(m.get("id") == model for m in providers[provider].get("models", [])):
                 missing.append(api_ref)
-    result = {"checked_config": config_path, "unregistered": missing, "ok": not missing}
+    warnings = _check_warnings(entries)
+    result = {"checked_config": config_path, "unregistered": missing,
+              "warnings": warnings, "ok": not missing}
     print(json.dumps(result, ensure_ascii=False))
     return 0 if not missing else 1
 

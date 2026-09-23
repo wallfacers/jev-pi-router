@@ -2,7 +2,8 @@
 
 - 每次路由决策 append 一行（无论 engine 路径）；session id 只存哈希。
 - 三条不变量在写入前强制校验：
-  1. review_plan.degrade=true ⇒ 至少一个 degrade_single_vendor 事件（SC-002 无静默降级）；
+  1. review_plan.degrade=true ⇒ 至少一个 degrade_single_vendor / degrade_same_origin 事件
+     （SC-002 无静默降级；same_origin 事件为 002 FR-004 新增，归因唯一二者只会出现其一）；
   2. fail_open=true ⇔ engine="rules"（可观测性对账）；
   3. schema 版本 v==1、必备字段齐全。
 """
@@ -51,9 +52,10 @@ def validate_record(record: dict) -> None:
         raise LogError("不变量2 违反: fail_open=true 时 engine 必须为 rules")
     events = record.get("fallback_events") or []
     if record.get("review_plan", {}).get("degrade") and not any(
-        e.get("type") == "degrade_single_vendor" for e in events
+        e.get("type") in ("degrade_single_vendor", "degrade_same_origin") for e in events
     ):
-        raise LogError("不变量1 违反: review_plan.degrade=true 必须伴随 degrade_single_vendor 事件")
+        raise LogError("不变量1 违反: review_plan.degrade=true 必须伴随 "
+                       "degrade_single_vendor 或 degrade_same_origin 事件")
 
 
 def append_decision(record: dict, path: Path | None = None) -> Path:
