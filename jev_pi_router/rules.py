@@ -74,7 +74,8 @@ def code_reviewer(producer: dict, strong: list, allow_degrade: bool = True) -> t
             return _entry_ref(entry), False
     if allow_degrade:
         for entry in candidates:
-            if entry.vendor != pv:                # family 同源但厂商异源：兜底（②）
+            if entry.vendor != pv and same_origin(entry, producer):
+                # family 同源但厂商异源：兜底（②）——显式校验同源，不依赖①层已扫过的顺序不变量
                 return _entry_ref(entry), True
         if candidates:
             return _entry_ref(candidates[0]), True  # 单厂商降级（③）

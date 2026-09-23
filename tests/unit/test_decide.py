@@ -118,3 +118,92 @@ def test_jev_ref_carries_cost_and_cache_signal():
     ref = jev_ref(e)
     assert ref["cost_hint"] == 0.15 and ref["cache_passthrough"] == "full"
     assert ref["family"] == "qwen3.8-flash" and ref["api_ref"] == "qianwenai/qwen3.8-flash"
+
+
+# ── review 修复回归：Jev reviewer 消费（A）/ family 注入健壮化（B）────────────
+
+def _fake_jev(pick_reviewer=None):
+    def fake(task_brief, risk_tags, implement_candidates, reviewer_candidates, timeout_ms=2000):
+        out = {"task_class": "implement", "complexity": "low"}
+        if pick_reviewer is not None:
+            out["reviewer_ref"] = pick_reviewer   # 显式指定（含模拟 Jev 异常越池返回）
+        elif reviewer_candidates:
+            out["reviewer_ref"] = reviewer_candidates[0]["api_ref"]
+        return out
+    return fake
+
+
+def test_jev_reviewer_accepted_when_valid(sample_request, config_path, monkeypatch):
+    """fix A：Jev 的合法 reviewer 直接采纳（此前被静默丢弃）。"""
+    from jev_pi_router import jev_client
+    monkeypatch.setattr(jev_client, "decide", _fake_jev("glm/glm-5.3"))
+    request = _req(sample_request,
+                   implementer={"vendor": "deepseek", "model": "deepseek-flash",
+                                "api_ref": "deepseek/deepseek-flash"})
+    response = decide(request, engine="jev", config_path=config_path)
+    rp = response["review_plan"]
+    assert rp["code_reviewer"]["api_ref"] == "glm/glm-5.3"
+    assert rp["degrade"] is False
+    assert "[pairing-corrected]" not in response["rationale"]
+
+
+def test_jev_same_origin_reviewer_corrected(sample_request, config_path, monkeypatch):
+    """fix A/002 契约 §4：Jev 返回同源 reviewer → 丢弃、三级重选、[pairing-corrected]。"""
+    from jev_pi_router import jev_client
+    monkeypatch.setattr(jev_client, "decide", _fake_jev("glm/glm-5.3"))  # 与 producer 同 family
+    request = _req(sample_request,
+                   implementer={"vendor": "qianwenai", "model": "glm-5.3",
+                                "api_ref": "qianwenai/glm-5.3"})
+    response = decide(request, engine="jev", config_path=config_path)
+    rp = response["review_plan"]
+    assert "[pairing-corrected]" in response["rationale"]
+    assert rp["code_reviewer"]["api_ref"] == "mimo/mimo-v2.6-pro"   # 真异源重选
+    assert rp["degrade"] is False
+
+
+def test_jev_same_origin_reviewer_fallback_degrades(sample_request, config_path, monkeypatch, tmp_path):
+    """fix A：真异源枯竭时 Jev 非法选择的重选落到同源兜底（degrade + 归因 same_origin）。"""
+    import yaml
+    from jev_pi_router import jev_client
+    data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    data["strong_pool"] = [i for i in data["strong_pool"]
+                           if i["api_ref"] in ("glm/glm-5.3", "qianwenai/glm-5.3")]
+    cfg = tmp_path / "router.config.yaml"
+    cfg.write_text(yaml.safe_dump(data, allow_unicode=True), encoding="utf-8")
+    monkeypatch.setattr(jev_client, "decide", _fake_jev("glm/glm-5.3"))
+    request = _req(sample_request,
+                   implementer={"vendor": "qianwenai", "model": "glm-5.3",
+                                "api_ref": "qianwenai/glm-5.3"})
+    response = decide(request, engine="jev", config_path=cfg)
+    rp = response["review_plan"]
+    assert "[pairing-corrected]" in response["rationale"]
+    assert rp["degrade"] is True and rp["degrade_reason"] == "same_origin"
+    assert rp["code_reviewer"]["api_ref"] == "glm/glm-5.3"
+    assert "degrade_same_origin" in [e["type"] for e in response["fallback_events"]]
+
+
+def test_jev_reviewer_not_requested_without_producer(sample_request, config_path, monkeypatch):
+    """fix A：无 implementer 时 reviewer 问项不再发起（答案无消费方）。"""
+    from jev_pi_router import jev_client
+    seen = {}
+
+    def fake(task_brief, risk_tags, implement_candidates, reviewer_candidates, timeout_ms=2000):
+        seen["reviewers"] = reviewer_candidates
+        return {"task_class": "implement", "complexity": "low"}
+
+    monkeypatch.setattr(jev_client, "decide", fake)
+    decide(sample_request, engine="jev", config_path=config_path)   # implementer=None
+    assert seen["reviewers"] == []
+
+
+def test_producer_family_injection_loose_match(sample_request, config_path):
+    """fix B：api_ref 缺失/大小写混乱/别名时按 vendor/model 兜底注入 family。"""
+    request = _req(sample_request,
+                   implementer={"vendor": "QianwenAI", "model": "GLM-5.3"})
+    response = decide(request, engine="rules", config_path=config_path)
+    assert response["review_plan"]["implementer"]["family"] == "glm-5.3"
+    request = _req(sample_request,
+                   implementer={"vendor": "qianwenai", "model": "glm-5.3",
+                                "api_ref": "qianwenai/glm-5.3-alias"})
+    response = decide(request, engine="rules", config_path=config_path)
+    assert response["review_plan"]["implementer"]["family"] == "glm-5.3"

@@ -136,3 +136,17 @@ def test_promptcache_manifest_covers_all_pool_entries():
     refs = {item["api_ref"] for pool in ("strong_pool", "flash_pool") for item in data.get(pool) or []}
     keys = set(json.loads((root / "pi/models.promptcache.json").read_text(encoding="utf-8"))["promptCache"])
     assert refs <= keys
+
+
+def test_deepseek_flash_pair_shares_family():
+    """review 修复 D：deepseek-flash 双渠道同底层模型对声明同 family（实质同源互斥）。"""
+    from pathlib import Path
+
+    import yaml
+
+    root = Path(__file__).resolve().parents[2]
+    data = yaml.safe_load((root / "router.config.yaml.example").read_text(encoding="utf-8"))
+    fams = {item["api_ref"]: item.get("family", "")
+            for pool in ("strong_pool", "flash_pool") for item in data.get(pool) or []}
+    assert fams["deepseek/deepseek-flash"] == "deepseek-flash"
+    assert fams["opencode-go/deepseek-flash"] == "deepseek-flash"

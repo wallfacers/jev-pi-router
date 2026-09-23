@@ -97,9 +97,15 @@ def decide(request: dict, engine: str = "auto", config_path=None, timeout_ms: in
     previous_refs = set(history.get("previous_models") or [])
     producer = request.get("implementer") or None        # review 场景：产出者 {vendor, model}
     if producer and not producer.get("family"):
-        # 002 R3：按 api_ref 从两池解析 producer 的 family 注入；查不到 = 独立条目（向后兼容）
-        prod_ref = producer.get("api_ref") or f"{producer.get('vendor')}/{producer.get('model')}"
-        fam_entry = next((e for e in cfg.strong + cfg.flash if e.api_ref == prod_ref), None)
+        # 002 R3：按 api_ref 从两池解析 producer 的 family 注入；查不到 = 独立条目（向后兼容）。
+        # api_ref 大小写不敏感 + vendor/model 兜底匹配，防调用方拼写差异导致同源注入静默失败。
+        entries = cfg.strong + cfg.flash
+        prod_ref = (producer.get("api_ref") or f"{producer.get('vendor')}/{producer.get('model')}").lower()
+        fam_entry = next((e for e in entries if e.api_ref.lower() == prod_ref), None)
+        if fam_entry is None:
+            pv = (producer.get("vendor") or "").lower()
+            pm = (producer.get("model") or "").lower()
+            fam_entry = next((e for e in entries if e.vendor.lower() == pv and e.model.lower() == pm), None)
         if fam_entry is not None:
             producer = {**producer, "family": fam_entry.family}
 
@@ -139,6 +145,7 @@ def decide(request: dict, engine: str = "auto", config_path=None, timeout_ms: in
     engine_used, fail_open = "rules", False
 
     # ── Jev 覆盖（FR-005；失败 fail-open，FR-006）────────────────
+    jev_reviewer_ref = None
     if engine in ("auto", "jev") and not escalated:
         reviewer_pool = [e for e in strong_for_review if not producer
                          or (e.vendor != producer.get("vendor") and not rules.same_origin(e, producer))]
@@ -146,7 +153,8 @@ def decide(request: dict, engine: str = "auto", config_path=None, timeout_ms: in
             jev = jev_client.decide(
                 request["task_brief"], request.get("risk_tags") or [],
                 [jev_ref(e) for e in (flash if pool_name == "flash" else strong)][:5],
-                [jev_ref(e) for e in reviewer_pool][:5],
+                # 无 producer 时不做 review 配对，不问 reviewer（问项答案无消费方，白耗一轮）
+                [jev_ref(e) for e in reviewer_pool][:5] if producer else [],
                 timeout_ms or cfg.engine.timeout_ms,
             )
             task_class = jev.get("task_class", task_class)
@@ -156,6 +164,12 @@ def decide(request: dict, engine: str = "auto", config_path=None, timeout_ms: in
                 match = next((e for e in pool if e.api_ref == implement_ref), None)
                 if match is not None:
                     chosen = match
+            reviewer_pick = jev.get("reviewer_ref")
+            if reviewer_pick and producer:
+                # Jev 的 reviewer 选择参与最终配对（此前被静默丢弃）；仅采自真正可用强条目
+                match = next((e for e in strong_for_review if e.api_ref == reviewer_pick), None)
+                if match is not None:
+                    jev_reviewer_ref = match.as_ref()
             engine_used = "jev"
         except jev_client.JevError as exc:
             if engine == "jev" and not cfg.engine.fail_open:
@@ -171,7 +185,14 @@ def decide(request: dict, engine: str = "auto", config_path=None, timeout_ms: in
     corrected = False
     if producer:
         allow_degrade = cfg.review.degrade_to_single_vendor
-        reviewer_ref, degrade = rules.code_reviewer(producer, strong_for_review, allow_degrade)
+        # 001 契约"配对硬约束后置覆盖"：Jev 选择通过硬约束则直接采纳；违反（如同源 reviewer）
+        # 则丢弃并走 rules 三级降级重选，rationale 标记 [pairing-corrected]（002 R3/契约 §4）。
+        if jev_reviewer_ref and rules.pairing_valid(jev_reviewer_ref, producer):
+            reviewer_ref, degrade = jev_reviewer_ref, False
+        else:
+            if jev_reviewer_ref:
+                corrected = True
+            reviewer_ref, degrade = rules.code_reviewer(producer, strong_for_review, allow_degrade)
         if task_class == "design":
             review_plan["plan_reviewers"] = [{"author": producer, "reviewer": reviewer_ref}] if reviewer_ref else []
         else:
@@ -188,8 +209,6 @@ def decide(request: dict, engine: str = "auto", config_path=None, timeout_ms: in
                                               else "degrade_single_vendor", "explicit", ts=ts))
             rationale_parts.append("真异源候选枯竭，同源模型兜底复核（已标记）" if reason == "same_origin"
                                    else "强池仅单厂商可用，review 降级（已标记）")
-        if reviewer_ref and not degrade and not rules.pairing_valid(reviewer_ref, producer):
-            corrected = True
     if (producer and not review_plan["code_reviewer"] and not review_plan["plan_reviewers"]
             and not review_plan["degrade"]):
         corrected = True

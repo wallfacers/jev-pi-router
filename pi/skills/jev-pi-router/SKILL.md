@@ -20,7 +20,7 @@ You are the strong-model main Agent (orchestrator). The following discipline ens
 
    ```bash
    echo '{"task_ref":"<id>","task_brief":"<≤2000-char summary>","role":"implement|review|plan|...",
-         "implementer":{"vendor":"<producer vendor>","model":"<...>"} or null,
+         "implementer":{"vendor":"<producer vendor>","model":"<...>","api_ref":"<vendor/model>"} or null,
          "risk_tags":[],"history":{"review_fail_count":0,"previous_models":[]},
          "vendor_failures":[{"vendor":"<failed vendor>","trigger":"timeout"}],
          "vendor_success":[{"vendor":"<recently succeeded vendor>"}]}' \

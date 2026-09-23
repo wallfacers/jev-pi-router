@@ -60,8 +60,11 @@ def validate_record(record: dict) -> None:
     reason = record.get("review_plan", {}).get("degrade_reason") or ""
     if reason in ("same_origin", "single_vendor"):
         expected = "degrade_same_origin" if reason == "same_origin" else "degrade_single_vendor"
+        other = "degrade_single_vendor" if reason == "same_origin" else "degrade_same_origin"
         if not any(e.get("type") == expected for e in events):
             raise LogError(f"不变量1 违反: degrade_reason={reason} 必须伴随 {expected} 事件")
+        if any(e.get("type") == other for e in events):
+            raise LogError(f"不变量1 违反: 归因唯一——degrade_reason={reason} 不得伴随 {other} 事件")
 
 
 def append_decision(record: dict, path: Path | None = None) -> Path:

@@ -8,6 +8,8 @@
 
 **Rationale**: spec 假设明确"同源组以显式配置声明为准，系统不自动推断"；字段厂商无关，满足 FR-002（qianwenai 零专属分支）；未声明条目（mimo、deepseek、opencode-go 等）行为零变化，满足 SC-002。
 
+**实施后补充**：`deepseek/deepseek-flash` 与 `opencode-go/deepseek-flash` 同底层模型对亦补声明 `family: deepseek-flash`（review 修复轮次，实质同源互斥优先于"行为零变化"）。
+
 **Alternatives considered**:
 - 按 model 名相似度自动推断同源——被拒：误判风险高（`mimo-v2.6-pro` vs `mimo-v2.6-flash` 同前缀不同档），且违反 spec"不自动推断"假设。
 - 维持仅厂商名判定——被拒：用户澄清明确要求实质异源。
