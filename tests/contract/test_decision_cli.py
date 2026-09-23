@@ -164,11 +164,53 @@ def test_exit_3_on_missing_fields(config_path):
     assert result.returncode == 3
 
 
+def test_exit_3_on_non_object_request(config_path):
+    """R5-1：stdin 为合法 JSON 但非对象（如 5）→ exit 3 + error JSON，不冒泡 traceback。"""
+    result = subprocess.run(
+        [sys.executable, str(DECIDE), "--engine", "rules", "--config", str(config_path)],
+        input="5", capture_output=True, text=True, timeout=30)
+    assert result.returncode == 3, result.stderr
+    assert _stderr_error_json(result.stderr)["error"]
+
+
 def test_exit_2_on_bad_config(tmp_path, sample_request):
     bad = tmp_path / "bad.yaml"
     bad.write_text("strong_pool: []\nflash_pool: []\n", encoding="utf-8")
     result = run_cli(sample_request, bad)
     assert result.returncode == 2
+
+
+def _stderr_error_json(stderr: str) -> dict:
+    """从 stderr 提取结构化 error JSON（usage 文本与 error JSON 共存，逐行探测）。"""
+    for line in stderr.splitlines():
+        line = line.strip()
+        if line.startswith("{"):
+            return json.loads(line)
+    raise AssertionError(f"stderr 缺少 error JSON：{stderr!r}")
+
+
+def test_exit_3_on_argparse_usage_error(config_path):
+    """R3-5：argparse 用法错误不再走默认 exit 2（与配置错误同码）→ 统一 3 + error JSON。
+
+    覆盖两类用法错误：--engine 非法值（choices）、--timeout-ms 非数值（type=int）。
+    """
+    for bad_args in (["--engine", "bogus"], ["--timeout-ms", "abc"]):
+        result = subprocess.run(
+            [sys.executable, str(DECIDE), *bad_args, "--config", str(config_path)],
+            input="{}", capture_output=True, text=True, timeout=30)
+        assert result.returncode == 3, (bad_args, result.returncode, result.stderr)
+        assert "usage:" in result.stderr, (bad_args, result.stderr)
+        assert _stderr_error_json(result.stderr)["error"], bad_args
+
+
+def test_exit_3_on_non_numeric_quota_until(config_path):
+    """R2-7：quota_until 为日期字符串 → exit 3（参数/输入非法），不冒泡 ValueError traceback。"""
+    request = _impl_request("t-003-quota-until")
+    request["vendor_failures"] = [{"vendor": "deepseek", "trigger": "quota",
+                                   "quota_until": "2027-01-01"}]
+    result = run_cli(request, config_path)
+    assert result.returncode == 3, result.stderr
+    assert "quota_until" in result.stderr
 
 
 def test_log_record_written(config_path, sample_request):
@@ -189,3 +231,23 @@ def test_reviewer_never_penetrates_full_quota_block(config_path):
     rp = response["review_plan"]
     assert rp["code_reviewer"] is None and rp["degrade"] is False
     assert "[pairing-corrected]" in response["rationale"]
+
+
+# ── 003 修复1：池枯竭契约（chosen=null + pool_exhausted）────────────────────
+
+def test_pool_exhausted_contract(config_path):
+    """flash 全厂商额度封禁 → chosen=null、pool_exhausted=true、fallback_order=[]、事件留痕。"""
+    import yaml
+
+    data = yaml.safe_load(Path(config_path).read_text(encoding="utf-8"))
+    vendors = sorted({item["vendor"] for item in data["flash_pool"]})
+    for i, vendor in enumerate(vendors):
+        run_cli({**_impl_request(f"t-003-block-{i}"),
+                 "vendor_failures": [{"vendor": vendor, "trigger": "quota"}]}, config_path)
+    result = run_cli(_impl_request("t-003-pool"), config_path)
+    assert result.returncode == 0, result.stderr
+    response = json.loads(result.stdout)
+    assert response["chosen"] is None
+    assert response["pool_exhausted"] is True
+    assert response["fallback_order"] == []
+    assert "pool_exhausted" in [e["type"] for e in response["fallback_events"]]

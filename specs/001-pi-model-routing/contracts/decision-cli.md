@@ -35,7 +35,7 @@ echo '<request JSON>' | bin/jev-pi-decide [--engine auto|rules|jev] [--timeout-m
 | task_brief | ✅ | ≤2000 字符任务摘要（Jev 决策输入；超长截断） |
 | role | ✅ | orchestrator \| plan \| decision \| review \| fallback_arbiter \| implement |
 | task_class_hint | | 调用方可预判；Jev 可覆盖 |
-| candidates | ✅ | 当前可用池（已剔除熔断条目；来自配置） |
+| candidates | | 未使用（池来自配置；保留字段仅作向后兼容，实现不读取） |
 | implementer | review 场景必填 | 产出者 vendor/model（FR-007 配对依据） |
 | risk_tags | | security / auth / concurrency / migration / performance 等（影响复杂度分级） |
 | history | | review_fail_count（质量升级判定）、previous_models（避免重派同一失败模型） |
@@ -55,6 +55,7 @@ echo '<request JSON>' | bin/jev-pi-decide [--engine auto|rules|jev] [--timeout-m
   "fallback_order": [{"vendor": "glm", "model": "glm-5.3-flash", "api_ref": "glm/glm-5.3-flash"}],
   "engine": "jev",
   "fail_open": false,
+  "pool_exhausted": false,
   "rationale": "明确的实现类子任务，低复杂度，派 flash；异源 reviewer 选 mimo"
 }
 ```
@@ -64,8 +65,9 @@ echo '<request JSON>' | bin/jev-pi-decide [--engine auto|rules|jev] [--timeout-m
 1. **fail-open（FR-006）**：Jev 超时/异常 → `engine: "rules"`、`fail_open: true`、**exit 0**，用规则结果作答；任务不中断。
 2. **配对硬约束后置覆盖（FR-007/008）**：无论 Jev 返回什么，`code_reviewer.vendor != implementer.vendor`、plan 互审双向异源由 rules 层强制；发生修正时 `rationale` 注明 `[pairing-corrected]`。
 3. **质量升级输入**：`history.review_fail_count >= 阈值(默认 2)` → response 的 `chosen` 直接落在 strong_pool 且 vendor != 之前的实现厂商（FR-010）。
-4. **退出码**：`0` 成功（含 fail-open）；`2` 配置缺失/非法（stderr 说明）；`3` 参数/输入 JSON 非法。
+4. **退出码**：`0` 成功（含 fail-open）；`2` 配置缺失/非法（stderr 说明）；`3` 参数/输入 JSON 非法（含 argparse 用法错误：`--engine` 非法值、`--timeout-ms` 非数值等，统一按 3 退出并输出 usage + error JSON）。
 5. 每次调用追加一条 RouteDecision 到决策日志（contracts/decision-log-schema.md），无论引擎路径。
+6. **池枯竭（pool_exhausted）**：候选池全部不可用，即 `available` 与 `eligible` 均空（封禁/熔断/停用）时，`chosen: null`、顶层 `pool_exhausted: true`、`fallback_order: []`，并产生 `pool_exhausted` 事件；此时不再调用 Jev（候选为空问不出可派发结果），`task_class`/`complexity` 取规则基线值。调用方**须显式告知用户池枯竭**并等待人工介入（`vendor_unlock` 解锁 / 等待熔断冷却），**不得静默降级**。正常路径 `pool_exhausted: false`。
 
 ## 2. `bin/jev-pi-report` — 决策报表（FR-011 / SC-001/002）
 
@@ -118,7 +120,7 @@ bin/jev-pi-doctor probe <api_ref> [--write-back]
 - `"quota"`：套餐/周限额额度尽 → **立即封禁该厂商**（`quota_block` 事件，一次即封，不等 3 连败），
   可带 `quota_until`（epoch 秒，到期自动解锁 `quota_unlock: auto`）与 `key_id`（同厂商多 key 留痕）；
   不带 `quota_until` = 无限期封禁，需人工解锁；
-- 其它（timeout / 5xx / auth / explicit）→ 熔断计数（原行为）。
+- 其它（timeout / http_5xx / auth / explicit）→ 熔断计数（原行为）。
 
 `request.vendor_unlock`：`[{"vendor"}]`——套餐重置后人工解锁（`quota_unlock: manual`）。
 人工解锁亦可用 `bin/jev-pi-doctor unlock <vendor>`；`bin/jev-pi-doctor quotas` 查看封禁表。

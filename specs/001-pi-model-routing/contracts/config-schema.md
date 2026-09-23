@@ -106,6 +106,7 @@ b_mode:
 | `review.max_rounds` ≥ 1；`quality_upgrade.review_fails` ≤ `review.max_rounds` | FR-010 一致性 |
 | `cache_passthrough` ∈ {full, partial, none, unknown}；路由权重序 full > partial > unknown > none | R8 |
 | 配置变更即时生效（每次决策重新加载） | FR-013 |
+| 配置路径解析优先级：显式 path 参数 > 环境变量 `JEV_PI_ROUTER_CONFIG`（空值视为未设置）> 仓库根 `router.config.yaml` 绝对路径（与 cwd 无关） | FR-013 |
 
 ## pi 侧配套（非本文件，安装时合并）
 

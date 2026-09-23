@@ -15,6 +15,14 @@ CACHE_RANK = {"full": 3, "partial": 2, "unknown": 1, "none": 0}
 VALID_CACHE = set(CACHE_RANK)
 ROLES = ("orchestrator", "plan", "decision", "review", "fallback_arbiter", "implement")
 
+PACKAGE_DIR = Path(__file__).resolve().parent
+REPO_ROOT = PACKAGE_DIR.parent
+
+
+def default_config_path() -> Path:
+    """默认配置：仓库根 router.config.yaml（绝对路径，与 cwd 无关）。"""
+    return REPO_ROOT / "router.config.yaml"
+
 
 class ConfigError(Exception):
     """配置缺失/非法（CLI 退出码 2）。"""
@@ -122,8 +130,16 @@ def _parse_entries(raw: list, pool: str, errors: list) -> list:
 
 
 def load_config(path: str | os.PathLike | None = None) -> RouterConfig:
-    """加载并校验 router.config.yaml（FR-013 校验规则见 contracts/config-schema.md）。"""
-    resolved = Path(path or os.environ.get("JEV_PI_ROUTER_CONFIG", "router.config.yaml"))
+    """加载并校验 router.config.yaml（FR-013 校验规则见 contracts/config-schema.md）。
+
+    路径解析：显式 path > 环境变量 JEV_PI_ROUTER_CONFIG > 仓库根 router.config.yaml。
+    """
+    if path:
+        resolved = Path(path)
+    elif os.environ.get("JEV_PI_ROUTER_CONFIG"):
+        resolved = Path(os.environ["JEV_PI_ROUTER_CONFIG"])
+    else:
+        resolved = default_config_path()
     if not resolved.exists():
         raise ConfigError(f"配置文件不存在: {resolved}")
     try:

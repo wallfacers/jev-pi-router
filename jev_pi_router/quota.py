@@ -111,7 +111,7 @@ class QuotaRegistry:
             left = self.cards_left(vendor)
             parts = [f"{vendor} 额度封禁中（{q.reason}）"]
             if q.blocked_until:
-                parts.append(datetime.fromtimestamp(q.blocked_until).strftime("%m-%d %H:%M") + " 自动解锁")
+                parts.append(datetime.fromtimestamp(q.blocked_until).strftime("%Y-%m-%d %H:%M") + " 自动解锁")
             if left > 0:
                 parts.append(f"可用重置卡解锁（余{left}张）")
             else:
