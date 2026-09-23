@@ -3,6 +3,8 @@
 version: 1
 
 # ── 模型池（有序；顺序 = 手动模式路由优先级；FR-001）────────────────
+# family：同源组标识（002 FR-004）——同底层模型的条目声明相同 family，
+# 跨厂商互审原则上不互为 reviewer；缺省/空 = 独立条目。
 strong_pool:
   - vendor: mimo
     model: mimo-v2.6-pro
@@ -13,8 +15,23 @@ strong_pool:
   - vendor: glm
     model: glm-5.3
     api_ref: glm/glm-5.3
+    family: glm-5.3               # 与 qianwenai/glm-5.3 同底层模型
     cost_hint: 1.0
     cache_passthrough: unknown
+    enabled: true
+  - vendor: qianwenai
+    model: qwen3.8-max
+    api_ref: qianwenai/qwen3.8-max
+    family: qwen3.8-max
+    cost_hint: 1.0                # 平权：与全部强池条目同值（002 R4）
+    cache_passthrough: full       # 千问 Token Plan 官方直连，pi 侧已声明 promptCache（002 R5）
+    enabled: true
+  - vendor: qianwenai
+    model: glm-5.3
+    api_ref: qianwenai/glm-5.3
+    family: glm-5.3               # 与 glm/glm-5.3 同源，互审互斥（002 FR-004）
+    cost_hint: 1.0
+    cache_passthrough: full
     enabled: true
 
 flash_pool:
@@ -33,6 +50,7 @@ flash_pool:
   - vendor: relay
     model: cmd-deepseek-v4.1-flash
     api_ref: relay/cmd-deepseek-v4.1-flash
+    family: deepseek-v4.1-flash   # 与 qianwenai/deepseek-v4.1-flash 同底层模型
     cost_hint: 0.1
     cache_passthrough: unknown    # 本地中转，doctor probe 实测项
     enabled: true
@@ -41,6 +59,20 @@ flash_pool:
     api_ref: opencode-go/deepseek-flash
     cost_hint: 0.1
     cache_passthrough: unknown    # 中转，doctor probe 实测项
+    enabled: true
+  - vendor: qianwenai
+    model: qwen3.8-flash
+    api_ref: qianwenai/qwen3.8-flash
+    family: qwen3.8-flash
+    cost_hint: 0.15               # 平权：与直连 flash 档同级（002 R4）
+    cache_passthrough: full
+    enabled: true
+  - vendor: qianwenai
+    model: deepseek-v4.1-flash
+    api_ref: qianwenai/deepseek-v4.1-flash
+    family: deepseek-v4.1-flash   # 与 relay/cmd-deepseek-v4.1-flash 同源
+    cost_hint: 0.1                # 平权：与同源条目同值（002 R4）
+    cache_passthrough: full
     enabled: true
 
 # ── 角色 → 池绑定（FR-002；implement 必须 = flash，FR-003）─────────

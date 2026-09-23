@@ -58,3 +58,63 @@ def test_half_open_migration_persisted(sample_request, config_path):
     decide(_req(sample_request), engine="rules", config_path=config_path)
     state = json.loads(open(state_path, encoding="utf-8").read())
     assert state["breakers"]["deepseek"]["state"] == "half_open"
+
+
+# ── 002 US1：qianwenai 四模型按档位进入路由池（FR-003/010、SC-001）──────────────────
+
+QNA_FLASH_PREV = ["deepseek/deepseek-flash", "glm/glm-5.3-flash",
+                  "relay/cmd-deepseek-v4.1-flash", "opencode-go/deepseek-flash"]
+
+
+def test_implement_dispatches_to_qna_flash(sample_request, config_path):
+    """US1-2：排除既有 flash 条目后，implement 派发到 qianwenai/qwen3.8-flash（池顺序轮询）。"""
+    request = _req(sample_request, history={"review_fail_count": 0, "previous_models": QNA_FLASH_PREV})
+    response = decide(request, engine="rules", config_path=config_path)
+    assert response["chosen"]["api_ref"] == "qianwenai/qwen3.8-flash"
+    assert response["chosen"]["pool"] == "flash"
+
+
+def test_plan_dispatches_to_qna_strong(sample_request, config_path):
+    """US1-3：排除既有强条目后，plan 派发到 qianwenai/qwen3.8-max（顶级档与 mimo 同权）。"""
+    request = _req(sample_request, role="plan", task_class_hint="design",
+                   history={"review_fail_count": 0,
+                            "previous_models": ["mimo/mimo-v2.6-pro", "glm/glm-5.3"]})
+    response = decide(request, engine="rules", config_path=config_path)
+    assert response["chosen"]["api_ref"] == "qianwenai/qwen3.8-max"
+    fb_refs = {e["api_ref"] for e in response["fallback_order"]}
+    assert "qianwenai/glm-5.3" in fb_refs   # qianwenai 强条目进入同池兜底轮换
+
+
+def test_default_order_unbiased_qna_in_rotation(sample_request, config_path):
+    """FR-008/SC-006 平权：默认派发首选仍为既有条目，qianwenai 全量出现在 fallback 轮换。"""
+    response = decide(sample_request, engine="rules", config_path=config_path)
+    assert response["chosen"]["api_ref"] == "deepseek/deepseek-flash"   # 既有池首不动
+    fb_refs = {e["api_ref"] for e in response["fallback_order"]}
+    assert {"qianwenai/qwen3.8-flash", "qianwenai/deepseek-v4.1-flash"} <= fb_refs
+
+
+def test_disabled_qna_entry_skipped_others_unaffected(sample_request, config_path, tmp_path):
+    """US1-4：qianwenai 单条目 enabled=false 不参与派发，其余 qianwenai 条目不受影响。"""
+    import yaml
+    data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    for item in data["flash_pool"]:
+        if item["api_ref"] == "qianwenai/qwen3.8-flash":
+            item["enabled"] = False
+    cfg = tmp_path / "router.config.yaml"
+    cfg.write_text(yaml.safe_dump(data, allow_unicode=True), encoding="utf-8")
+    request = _req(sample_request, history={"review_fail_count": 0, "previous_models": QNA_FLASH_PREV})
+    response = decide(request, engine="rules", config_path=cfg)
+    assert response["chosen"]["api_ref"] == "qianwenai/deepseek-v4.1-flash"   # 跳过停用条目轮到下一条
+
+
+# ── 002 review 修复回归 ─────────────────────────────────────────────────────
+
+def test_jev_ref_carries_cost_and_cache_signal():
+    """review F1：Jev 候选引用须携带 cost_hint/cache_passthrough（否则恒渲染默认值，信号失效）。"""
+    from jev_pi_router.config import ModelEntry
+    from jev_pi_router.decide import jev_ref
+    e = ModelEntry(vendor="qianwenai", model="qwen3.8-flash", api_ref="qianwenai/qwen3.8-flash",
+                   pool="flash", cost_hint=0.15, cache_passthrough="full", family="qwen3.8-flash")
+    ref = jev_ref(e)
+    assert ref["cost_hint"] == 0.15 and ref["cache_passthrough"] == "full"
+    assert ref["family"] == "qwen3.8-flash" and ref["api_ref"] == "qianwenai/qwen3.8-flash"

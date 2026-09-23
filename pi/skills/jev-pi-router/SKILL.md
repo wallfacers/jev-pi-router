@@ -11,10 +11,11 @@ You are the strong-model main Agent (orchestrator). The following discipline ens
 
 1. **Main session never writes code** (FR-003): all concrete code implementation must be dispatched as `subagent` tasks to **flash-model** executors
    (`model: "provider/id"`, from the flash pool: deepseek/deepseek-flash, glm/glm-5.3-flash,
-   relay/cmd-deepseek-v4.1-flash, opencode-go/deepseek-flash).
+   relay/cmd-deepseek-v4.1-flash, opencode-go/deepseek-flash, qianwenai/qwen3.8-flash,
+   qianwenai/deepseek-v4.1-flash).
 2. **Main session never switches models** (FR-004): switching the main model mid-session is prohibited (prompt-cache protection). Exception: a `/new` clean session may switch per turn (B mode, requires explicit user opt-in). If the strong model fails and a model switch is unavoidable, explicitly inform the user of the cache cost first.
-3. **Code review must be cross-vendor** (FR-007): the reviewer sub-agent must be a strong model from a **different vendor** than the implementer, and must use a fresh context (no carry-over of the implementer's reasoning).
-4. **Plan/decision mutual review** (FR-008): plans and architectural decisions must be reviewed by a strong model from another vendor (A produces → B reviews, B produces → A reviews). The review conclusion is recorded alongside the artifact.
+3. **Code review must be cross-vendor** (FR-007): the reviewer sub-agent must be a strong model from a **different vendor** than the implementer — and, since 002, not the same underlying model reached through another channel (entries declaring an identical `family` are same-origin and are mutually excluded from reviewing each other unless all truly-foreign candidates are exhausted; the router marks such fallbacks with `degrade_reason: "same_origin"`) — and must use a fresh context (no carry-over of the implementer's reasoning).
+4. **Plan/decision mutual review** (FR-008): plans and architectural decisions must be reviewed by a strong model from another vendor (A produces → B reviews, B produces → A reviews), subject to the same-origin exclusion of rule 3. The review conclusion is recorded alongside the artifact.
 5. **Every dispatch must first consult the router decision engine** (absolute paths, works from any directory):
 
    ```bash

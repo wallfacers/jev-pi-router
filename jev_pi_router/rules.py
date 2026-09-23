@@ -60,16 +60,24 @@ def _entry_ref(entry) -> dict:
 
 
 def code_reviewer(producer: dict, strong: list, allow_degrade: bool = True) -> tuple:
-    """FR-007：reviewer 必须与实现者异源；单厂商枯竭时按 allow_degrade 降级。
+    """FR-007 + 002 FR-004（R2 三级）：reviewer 须与产出者厂商异源且非 family 同源。
 
-    返回 (reviewer_ref | None, degrade: bool)。
+    层级：① 真异源（正常）→ ② 厂商异源但 family 同源兜底（allow_degrade）→
+    ③ 仅剩同厂商单厂商降级（allow_degrade，既有行为）。②/③ 均 degrade=True，
+    归因由调用方按派回条目 vendor 是否等于 producer.vendor 推导（②必异商/③必同商）。
+    返回 (reviewer_ref | None, degrade: bool)——签名保持 001 兼容（SC-002）。
     """
     candidates = [e for e in strong if e.enabled]
+    pv = producer.get("vendor")
     for entry in candidates:
-        if entry.vendor != producer.get("vendor"):
+        if entry.vendor != pv and not same_origin(entry, producer):
             return _entry_ref(entry), False
-    if candidates and allow_degrade:
-        return _entry_ref(candidates[0]), True
+    if allow_degrade:
+        for entry in candidates:
+            if entry.vendor != pv:                # family 同源但厂商异源：兜底（②）
+                return _entry_ref(entry), True
+        if candidates:
+            return _entry_ref(candidates[0]), True  # 单厂商降级（③）
     return None, False
 
 
@@ -78,6 +86,18 @@ def plan_reviewer(author: dict, strong: list, allow_degrade: bool = True) -> tup
     return code_reviewer(author, strong, allow_degrade)
 
 
+def _family(obj) -> str:
+    """family 取值的 dict/ModelEntry 双形态适配（producer 为请求字典，候选为 ModelEntry）。"""
+    return (obj.get("family") if isinstance(obj, dict) else getattr(obj, "family", "")) or ""
+
+
+def same_origin(a, b) -> bool:
+    """002 FR-004/R1：双方 family 均非空且相等 ⇒ 同底层模型（同源）。"""
+    fam = _family(a)
+    return bool(fam) and fam == _family(b)
+
+
 def pairing_valid(reviewer_ref: dict | None, producer: dict) -> bool:
-    """配对硬约束校验（Jev 结果后置覆盖用）。"""
-    return bool(reviewer_ref) and reviewer_ref.get("vendor") != producer.get("vendor")
+    """配对硬约束校验（Jev 结果后置覆盖用）：厂商异源且非 family 同源（002 R3）。"""
+    return (bool(reviewer_ref) and reviewer_ref.get("vendor") != producer.get("vendor")
+            and not same_origin(reviewer_ref, producer))

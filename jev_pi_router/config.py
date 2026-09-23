@@ -30,9 +30,13 @@ class ModelEntry:
     latency_hint: float | None = None
     cache_passthrough: str = "unknown"
     enabled: bool = True
+    family: str = ""            # 同源组标识（002 FR-004/R1）：空 = 独立；两条目同非空且相等 ⇒ 同源
 
     def as_ref(self) -> dict:
-        return {"vendor": self.vendor, "model": self.model, "api_ref": self.api_ref, "pool": self.pool}
+        ref = {"vendor": self.vendor, "model": self.model, "api_ref": self.api_ref, "pool": self.pool}
+        if self.family:
+            ref["family"] = self.family
+        return ref
 
 
 @dataclass(frozen=True)
@@ -100,6 +104,7 @@ def _parse_entries(raw: list, pool: str, errors: list) -> list:
         if cp not in VALID_CACHE:
             errors.append(f"{item['api_ref']} cache_passthrough 非法: {cp}（应为 {sorted(VALID_CACHE)}）")
             continue
+        fam = item.get("family")
         entries.append(
             ModelEntry(
                 vendor=item["vendor"],
@@ -110,6 +115,7 @@ def _parse_entries(raw: list, pool: str, errors: list) -> list:
                 latency_hint=item.get("latency_hint"),
                 cache_passthrough=cp,
                 enabled=bool(item.get("enabled", True)),
+                family=fam if isinstance(fam, str) else "",   # 非字符串/缺失按缺省容错（contracts/config-schema.md §1）
             )
         )
     return entries

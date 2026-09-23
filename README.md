@@ -1,11 +1,12 @@
 # jev-pi-router — PI 多厂商模型路由
 
-强模型（mimo/glm 池）做计划/决策/review/兜底/主控，flash 模型（deepseek/glm-flash/relay/
-opencode-go 池）子代理实现代码；混合裁决（配置表 + Jev typed-choice + fail-open）；双层跨厂
-商 review；双轨兜底；主会话零切换保护前置缓存。
+强模型（mimo/glm/qianwenai 池）做计划/决策/review/兜底/主控，flash 模型（deepseek/glm-flash/relay/
+opencode-go/qianwenai 池）子代理实现代码；混合裁决（配置表 + Jev typed-choice + fail-open）；双层跨厂
+商 review（同底层模型不同渠道视为同源，互审互斥，枯竭时带告警兜底）；双轨兜底；主会话零切换保护前置缓存。
 
 需求与设计文档见 `specs/001-pi-model-routing/`（spec / plan / research / data-model /
-contracts / quickstart）。
+contracts / quickstart）；qianwenai（千问 Token Plan）厂商接入与同源约束见
+`specs/002-qianwenai-vendor-pools/`。
 
 ## 安装
 

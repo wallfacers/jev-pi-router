@@ -20,9 +20,9 @@
 
 2. **期望观察**（对照技能纪律逐条看）：
    - 主 Agent（强模型，如 mimo-v2.6-pro）先调 `jev-pi-decide` 拿路由（implement → flash 池）；
-   - **写代码**派给 flash 子代理（`subagent` 的 `model` 参数应为 `deepseek/deepseek-flash` / `glm/glm-5.3-flash` / `relay/cmd-deepseek-v4.1-flash` / `opencode-go/deepseek-flash` 之一）；
-   - **代码 review** 派给**非实现厂商**的强模型子代理（如 deepseek 实现 → mimo 或 glm review），fresh context；
-   - **计划/决策**被另一强厂商互审（mimo ↔ glm 双向）；
+   - **写代码**派给 flash 子代理（`subagent` 的 `model` 参数应为 `deepseek/deepseek-flash` / `glm/glm-5.3-flash` / `relay/cmd-deepseek-v4.1-flash` / `opencode-go/deepseek-flash` / `qianwenai/qwen3.8-flash` / `qianwenai/deepseek-v4.1-flash` 之一）；
+   - **代码 review** 派给**非实现厂商**的强模型子代理（如 deepseek 实现 → mimo 或 glm review），fresh context；同底层模型不同渠道（family 相同，如 qianwenai/glm-5.3 与 glm/glm-5.3）视为同源不互审，仅异源枯竭时带 `degrade_reason=same_origin` 告警兜底；
+   - **计划/决策**被另一强厂商互审（mimo ↔ glm ↔ qianwenai，受同源互斥约束）；
    - 主会话模型**全程未切换**。
 
 3. **判定**（任务完成后跑）：
