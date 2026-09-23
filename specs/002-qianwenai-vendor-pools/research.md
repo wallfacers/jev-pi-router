@@ -21,7 +21,7 @@
 3. 无①②时，若 `allow_degrade` 且池非空 → 返回首个候选（可能同 vendor）→ `(ref, degrade=True, reason="single_vendor")`（既有行为）；
 4. `allow_degrade=False` 或池空 → `(None, False, "")`。
 
-返回签名由 `(ref, degrade)` 扩为 `(ref, degrade, reason)`；`degrade` 布尔语义保持"非正常配对"以兼容 log 不变量1 的触发条件。
+`degrade` 布尔语义保持"非正常配对"以兼容 log 不变量1 的触发条件。**实施修订（SC-002）**：`code_reviewer` 返回签名保持 `(ref, degrade)` 二元组不变——扩为三元组会破坏 `test_rules_pairing.py` 既有 6 处解包断言；归因改由 decide 侧推导（层级②必为厂商异源、层级③必为同厂商，`reviewer.vendor != producer.vendor` 即 same_origin，二者无损区分），`review_plan.degrade_reason` 字段语义不变。
 
 **Rationale**: 满足 FR-004（同源原则不互审 + 枯竭兜底带告警）与边界用例"归因唯一：same_origin 优先，不叠加 single_vendor，两类告警可区分"（analyze I1 修订后口径）——reason 区分②③，事件类型区分留痕（R8）。既有单厂商降级路径完全保留。
 

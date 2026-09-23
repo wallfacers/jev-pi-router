@@ -86,10 +86,10 @@
 
 **Purpose**: 端到端验证、统计报表口径、文档一致性。
 
-- [ ] T020 [P] 在 `tests/unit/test_stats.py` 补充用例：qianwenai 作为普通厂商进入统计分组；日志无 qianwenai 记录时 stats/report 正常输出零值不报错（FR-009）
-- [ ] T021 [P] 检查 `README.md`、`TESTING.md`、`pi/skills/` 中涉及厂商/模型池清单的描述，如 enumerates 既有厂商则补充 qianwenai（仅文档同步，不改语义）；确认 `specs/001-pi-model-routing/contracts/config-schema.md` 顶部无需变更（002 契约以增量文件形式存在，001 契约保持历史原貌）
-- [ ] T022 端到端走查 quickstart V0–V6 全场景（`specs/002-qianwenai-vendor-pools/quickstart.md`），逐条核对验收对照表；V6 probe 为可选真实调用（消耗套餐额度），无 key 时跳过并记录
-- [ ] T023 运行全量 `pytest tests/ -v` + `bin/jev-pi-doctor check`，确认零失败零 WARN 后提交（commit message 引用 002 特性，含 Co-Authored-By 归属行）
+- [x] T020 [P] 在 `tests/unit/test_stats.py` 补充用例：qianwenai 作为普通厂商进入统计分组；日志无 qianwenai 记录时 stats/report 正常输出零值不报错（FR-009）
+- [x] T021 [P] 检查 `README.md`、`TESTING.md`、`pi/skills/` 中涉及厂商/模型池清单的描述，如 enumerates 既有厂商则补充 qianwenai（仅文档同步，不改语义）；确认 `specs/001-pi-model-routing/contracts/config-schema.md` 顶部无需变更（002 契约以增量文件形式存在，001 契约保持历史原貌）
+- [x] T022 端到端走查 quickstart V0–V6 全场景（`specs/002-qianwenai-vendor-pools/quickstart.md`），逐条核对验收对照表；V6 probe 为可选真实调用（消耗套餐额度），无 key 时跳过并记录
+- [x] T023 运行全量 `pytest tests/ -v` + `bin/jev-pi-doctor check`，确认零失败零 WARN 后提交（commit message 引用 002 特性，含 Co-Authored-By 归属行）
 
 ---
 
@@ -149,6 +149,7 @@ T020（test_stats.py）  ∥  T021（文档同步）
 
 ## Notes
 
+- **实施偏差记录（002）**：① `code_reviewer` 保持二元组返回 + decide 侧推导归因（原 T009 三元组方案会破坏既有解包断言，违背 SC-002；见 research R2 修订）；② 既有 `test_load_valid` 池计数断言改为下限语义（`>=2 / >=4` + 成员断言）——池扩容下该数据性断言与"增删厂商只改配置"承诺天然冲突，为 SC-002 唯一例外；③ 厂商名按用户要求 qna → **qianwenai**（含 pi `~/.pi/agent/models.json`/`settings.json` 联动改名，原文件留有 `.bak-qna-rename` 备份；特性目录随之定名 002-qianwenai-vendor-pools）。
 - 所有"运行 pytest"任务在仓库根目录执行（pyproject 已配 testpaths）。
 - T005/T006 严禁调整既有条目顺序或字段值（R7 平权承诺，SC-002 前提）。
 - `code_reviewer` 签名变更（二值→三值）是内部 API：调用点仅 decide.py（T011）与测试（T010），无外部契约破坏。
