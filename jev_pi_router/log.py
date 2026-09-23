@@ -56,6 +56,12 @@ def validate_record(record: dict) -> None:
     ):
         raise LogError("不变量1 违反: review_plan.degrade=true 必须伴随 "
                        "degrade_single_vendor 或 degrade_same_origin 事件")
+    # 002 契约 §1/§2（review F7）：新记录的 degrade_reason 须与事件类型配对；旧记录无该字段不检查
+    reason = record.get("review_plan", {}).get("degrade_reason") or ""
+    if reason in ("same_origin", "single_vendor"):
+        expected = "degrade_same_origin" if reason == "same_origin" else "degrade_single_vendor"
+        if not any(e.get("type") == expected for e in events):
+            raise LogError(f"不变量1 违反: degrade_reason={reason} 必须伴随 {expected} 事件")
 
 
 def append_decision(record: dict, path: Path | None = None) -> Path:

@@ -149,6 +149,7 @@ T020（test_stats.py）  ∥  T021（文档同步）
 
 ## Notes
 
+- **代码级 review 修复（合并前，7 项发现）**：F1 Jev 候选引用补 cost_hint/cache_passthrough（`decide.jev_ref`）；F2/F6 doctor 清单损坏单条 WARN 不刷屏不崩溃（`_check_warnings` 容错 + 路径参数化）；F3 复核配对改用 available 过滤池，封禁期间兜底不穿透（契约 §4 落实）；F7 log 不变量增加 reason↔事件配对校验。F4（二元组签名归因推导）维持既有偏离并补注释，由 test_rules_pairing ②③ 层级用例守卫；F5（Jev reviewer 答案从未被消费）为 001 既有协议死代码，列为后续特性候选不阻塞本次合并。回归测试 +5（共 100 通过）。
 - **实施偏差记录（002）**：① `code_reviewer` 保持二元组返回 + decide 侧推导归因（原 T009 三元组方案会破坏既有解包断言，违背 SC-002；见 research R2 修订）；② 既有 `test_load_valid` 池计数断言改为下限语义（`>=2 / >=4` + 成员断言）——池扩容下该数据性断言与"增删厂商只改配置"承诺天然冲突，为 SC-002 唯一例外；③ 厂商名按用户要求 qna → **qianwenai**（含 pi `~/.pi/agent/models.json`/`settings.json` 联动改名，原文件留有 `.bak-qna-rename` 备份；特性目录随之定名 002-qianwenai-vendor-pools）。
 - 所有"运行 pytest"任务在仓库根目录执行（pyproject 已配 testpaths）。
 - T005/T006 严禁调整既有条目顺序或字段值（R7 平权承诺，SC-002 前提）。

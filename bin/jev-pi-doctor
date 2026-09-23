@@ -42,18 +42,22 @@ def _strip_channel_prefix(model: str) -> str:
     return model
 
 
-def _check_warnings(entries: list) -> list:
+def _check_warnings(entries: list, manifest_path: str = PROMPTCACHE_JSON) -> list:
     """002 R9 警告级体检项（不改退出码）：① promptcache 清单缺口；② 疑似同源 family 不一致/一方未声明。"""
     warnings = []
     try:
-        with open(PROMPTCACHE_JSON, encoding="utf-8") as fh:
-            cache_keys = set(json.load(fh).get("promptCache") or {})
-    except (OSError, json.JSONDecodeError):
-        cache_keys = set()
-        warnings.append("WARN 无法读取 pi/models.promptcache.json 清单")
-    for item in entries:
-        if item["api_ref"] not in cache_keys:
-            warnings.append(f"WARN {item['api_ref']} 缺少缓存声明清单条目")
+        with open(manifest_path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):    # 含 JSONDecodeError/UnicodeDecodeError（review F2）
+        data = None
+    if not isinstance(data, dict):
+        # 清单缺失/损坏：单条 WARN 概括，跳过逐条缺口检查（review F6——避免 N 条冗余告警淹没信号）
+        warnings.append(f"WARN 无法读取缓存声明清单 {manifest_path}（跳过逐条缺口检查）")
+    else:
+        cache_keys = set(data.get("promptCache") or {})
+        for item in entries:
+            if item["api_ref"] not in cache_keys:
+                warnings.append(f"WARN {item['api_ref']} 缺少缓存声明清单条目")
     by_base = {}
     for item in entries:
         by_base.setdefault(_strip_channel_prefix(item.get("model") or ""), []).append(item)

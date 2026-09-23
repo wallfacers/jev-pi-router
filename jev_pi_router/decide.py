@@ -32,6 +32,15 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
 
 
+def jev_ref(entry) -> dict:
+    """Jev 候选描述引用：as_ref + cost_hint/cache_passthrough（review F1 修复——
+    否则 jev_client 渲染恒为默认值 1.0/unknown，002 R4/R5 的平权与缓存档位信号到不了 Jev）。"""
+    ref = entry.as_ref()
+    ref["cost_hint"] = entry.cost_hint
+    ref["cache_passthrough"] = entry.cache_passthrough
+    return ref
+
+
 def decide(request: dict, engine: str = "auto", config_path=None, timeout_ms: int | None = None) -> dict:
     missing = [k for k in REQUIRED_REQUEST if not request.get(k)]
     if missing:
@@ -101,6 +110,9 @@ def decide(request: dict, engine: str = "auto", config_path=None, timeout_ms: in
 
     strong = available(cfg.strong) or rules.order_pool(cfg.strong, cfg.auto.enabled)
     flash = available(cfg.flash) or rules.order_pool(cfg.flash, cfg.auto.enabled)
+    # 002 契约 §4（review F3）：复核配对只从真正可用（未封禁/未熔断/未轮换过）的强条目中选择，
+    # 不随派发的池枯竭兜底回退全池——兜底不得穿透封禁；枯竭时无 reviewer，走 corrected 显式标记。
+    strong_for_review = available(cfg.strong)
     registry.save()      # 持久化 available() 触发的 open→half_open 迁移（S4 观测缺口修复）
     quotas.save()
 
@@ -128,13 +140,13 @@ def decide(request: dict, engine: str = "auto", config_path=None, timeout_ms: in
 
     # ── Jev 覆盖（FR-005；失败 fail-open，FR-006）────────────────
     if engine in ("auto", "jev") and not escalated:
-        reviewer_pool = [e for e in strong if not producer
+        reviewer_pool = [e for e in strong_for_review if not producer
                          or (e.vendor != producer.get("vendor") and not rules.same_origin(e, producer))]
         try:
             jev = jev_client.decide(
                 request["task_brief"], request.get("risk_tags") or [],
-                [e.as_ref() for e in (flash if pool_name == "flash" else strong)][:5],
-                [e.as_ref() for e in reviewer_pool][:5],
+                [jev_ref(e) for e in (flash if pool_name == "flash" else strong)][:5],
+                [jev_ref(e) for e in reviewer_pool][:5],
                 timeout_ms or cfg.engine.timeout_ms,
             )
             task_class = jev.get("task_class", task_class)
@@ -159,14 +171,16 @@ def decide(request: dict, engine: str = "auto", config_path=None, timeout_ms: in
     corrected = False
     if producer:
         allow_degrade = cfg.review.degrade_to_single_vendor
-        reviewer_ref, degrade = rules.code_reviewer(producer, strong, allow_degrade)
+        reviewer_ref, degrade = rules.code_reviewer(producer, strong_for_review, allow_degrade)
         if task_class == "design":
             review_plan["plan_reviewers"] = [{"author": producer, "reviewer": reviewer_ref}] if reviewer_ref else []
         else:
             review_plan["code_reviewer"] = reviewer_ref
         review_plan["degrade"] = degrade
         if degrade:
-            # 002 R2/R8 归因唯一：层级②同源兜底必为厂商异源、层级③单厂商降级必为同厂商
+            # 002 R2/R8 归因唯一：层级②同源兜底必为厂商异源、层级③单厂商降级必为同厂商。
+            # 此结构不变量由 test_rules_pairing ②③ 层级用例守卫（review F4：签名保持二元组以
+            # 兼容 001 既有解包断言，归因推导在调用方；重排层级须同步更新两侧测试）。
             reason = ("same_origin" if (reviewer_ref or {}).get("vendor") != producer.get("vendor")
                       else "single_vendor")
             review_plan["degrade_reason"] = reason

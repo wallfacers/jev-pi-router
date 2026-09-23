@@ -177,3 +177,15 @@ def test_log_record_written(config_path, sample_request):
     lines = (home / "decisions.jsonl").read_text(encoding="utf-8").strip().splitlines()
     record = json.loads(lines[-1])
     assert record["v"] == 1 and record["task_ref"] == sample_request["task_ref"]
+
+
+def test_reviewer_never_penetrates_full_quota_block(config_path):
+    """review F3（002 契约 §4）：强池全部额度封禁 → 复核兜底不穿透封禁，
+    无 reviewer 并显式 corrected 标记，而非派回被封厂商。"""
+    request = _review_request("t-002-pb", producer={"vendor": "qianwenai", "model": "glm-5.3"})
+    request["vendor_failures"] = [{"vendor": v, "trigger": "quota"}
+                                  for v in ("mimo", "glm", "qianwenai")]
+    response = json.loads(run_cli(request, config_path).stdout)
+    rp = response["review_plan"]
+    assert rp["code_reviewer"] is None and rp["degrade"] is False
+    assert "[pairing-corrected]" in response["rationale"]

@@ -36,7 +36,7 @@
 
 | # | 原不变量 | 扩展后 |
 |---|----------|--------|
-| 1 | `review_plan.degrade=true` ⇒ 事件含 `degrade_single_vendor` | `review_plan.degrade=true` ⇒ 事件含 `degrade_single_vendor` **或** `degrade_same_origin` |
+| 1 | `review_plan.degrade=true` ⇒ 事件含 `degrade_single_vendor` | `review_plan.degrade=true` ⇒ 事件含 `degrade_single_vendor` **或** `degrade_same_origin`；且新记录（含 `degrade_reason`）reason 与事件类型必须配对（review F7 修复） |
 
 - 不变量2（fail_open ⇒ engine=rules）不变；
 - 历史 JSONL 记录重放校验：旧记录 degrade=true 时必已有 `degrade_single_vendor`，满足扩展后不变量——**向后兼容，无需迁移**。

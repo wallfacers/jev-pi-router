@@ -95,3 +95,17 @@ def test_append_writes_json_line(isolated_home):
     path = append_decision(base_record())
     line = path.read_text(encoding="utf-8").strip().splitlines()[-1]
     assert json.loads(line)["task_ref"] == "t1"
+
+
+def test_invariant_reason_event_pairing_enforced():
+    """review F7：degrade_reason 与事件类型必须配对，错配拒绝落盘。"""
+    plan = {"code_reviewer": None, "plan_reviewers": [], "degrade": True, "degrade_reason": "same_origin"}
+    with pytest.raises(LogError, match="degrade_same_origin"):
+        validate_record(base_record(review_plan=plan, fallback_events=[
+            {"type": "degrade_single_vendor", "trigger": "explicit", "ts": ""}]))
+    with pytest.raises(LogError, match="degrade_single_vendor"):
+        validate_record(base_record(
+            review_plan={**plan, "degrade_reason": "single_vendor"},
+            fallback_events=[{"type": "degrade_same_origin", "trigger": "explicit", "ts": ""}]))
+    validate_record(base_record(review_plan=plan, fallback_events=[
+        {"type": "degrade_same_origin", "trigger": "explicit", "ts": ""}]))    # 正确配对通过

@@ -105,3 +105,16 @@ def test_disabled_qna_entry_skipped_others_unaffected(sample_request, config_pat
     request = _req(sample_request, history={"review_fail_count": 0, "previous_models": QNA_FLASH_PREV})
     response = decide(request, engine="rules", config_path=cfg)
     assert response["chosen"]["api_ref"] == "qianwenai/deepseek-v4.1-flash"   # 跳过停用条目轮到下一条
+
+
+# ── 002 review 修复回归 ─────────────────────────────────────────────────────
+
+def test_jev_ref_carries_cost_and_cache_signal():
+    """review F1：Jev 候选引用须携带 cost_hint/cache_passthrough（否则恒渲染默认值，信号失效）。"""
+    from jev_pi_router.config import ModelEntry
+    from jev_pi_router.decide import jev_ref
+    e = ModelEntry(vendor="qianwenai", model="qwen3.8-flash", api_ref="qianwenai/qwen3.8-flash",
+                   pool="flash", cost_hint=0.15, cache_passthrough="full", family="qwen3.8-flash")
+    ref = jev_ref(e)
+    assert ref["cost_hint"] == 0.15 and ref["cache_passthrough"] == "full"
+    assert ref["family"] == "qwen3.8-flash" and ref["api_ref"] == "qianwenai/qwen3.8-flash"
