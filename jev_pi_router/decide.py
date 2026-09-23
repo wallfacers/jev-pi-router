@@ -7,7 +7,8 @@ Jev 覆盖（auto/jev，失败 fail-open）→ 质量升级判定 → review 配
 扩展字段（契约向后兼容的可选项）：
 - request["vendor_failures"]: [{"vendor","trigger"}] —— 调用方上报的厂商故障
   （顶层为准；兼容旧 history.vendor_failures）；request["vendor_success"] 上报成功闭合熔断。
-  用于熔断计数与 fault_transfer 事件（一次性 CLI 的状态来源）。
+  用于熔断计数与额度事件留痕（一次性 CLI 的状态来源）；故障转移经 response.fallback_order
+  表达（rules.fallback_order），事件侧只有 breaker_open/breaker_close/quota_* 等。
 """
 
 from __future__ import annotations
@@ -42,6 +43,9 @@ def jev_ref(entry) -> dict:
 
 
 def decide(request: dict, engine: str = "auto", config_path=None, timeout_ms: int | None = None) -> dict:
+    # 顶层非对象（如 stdin 合法 JSON 5/[]/null）→ exit 3，不冒泡 request.get 的 AttributeError
+    if not isinstance(request, dict):
+        raise UsageError("请求必须是 JSON 对象")
     missing = [k for k in REQUIRED_REQUEST if not request.get(k)]
     if missing:
         raise UsageError(f"请求缺少字段: {missing}")
@@ -59,6 +63,8 @@ def decide(request: dict, engine: str = "auto", config_path=None, timeout_ms: in
     quotas = QuotaRegistry()
     quotas.load()
     history = request.get("history") or {}
+    if not isinstance(history, dict):    # history=5 等非对象 → exit 3，不冒泡后续 history.get 的 AttributeError
+        raise UsageError("history 必须是对象")
 
     fallback_events.extend(quotas.expire_due(ts=ts))    # 到期套餐额度自动解锁（quota_unlock: auto）
 
@@ -66,35 +72,58 @@ def decide(request: dict, engine: str = "auto", config_path=None, timeout_ms: in
     successes = request.get("vendor_success") or []
     if isinstance(successes, dict):
         successes = [successes]
-    for success in successes:
-        fallback_events.extend(registry.record_success(success["vendor"], ts=ts))
+    try:
+        for success in successes:
+            fallback_events.extend(registry.record_success(success["vendor"], ts=ts))
+    except (KeyError, TypeError, ValueError) as exc:
+        # 条目缺 vendor / 非对象 → exit 3（与 quota_until 同口径，不冒泡 traceback）
+        raise UsageError(f"vendor_success 条目非法（需 {{'vendor': ...}} 对象）: {exc!r}") from exc
 
     # 人工解锁：套餐重置/重置卡/活动提前重置（quota_unlock: <reason>，可提前覆盖 quota_until）
     unlocks = request.get("vendor_unlock") or []
     if isinstance(unlocks, dict):
         unlocks = [unlocks]
-    for item in unlocks:
-        fallback_events.extend(quotas.unlock(item["vendor"], reason=item.get("reason", "manual"),
-                                             key_id=item.get("key_id", ""), ts=ts))
+    try:
+        for item in unlocks:
+            fallback_events.extend(quotas.unlock(item["vendor"], reason=item.get("reason", "manual"),
+                                                 key_id=item.get("key_id", ""), ts=ts))
+    except (KeyError, TypeError, ValueError) as exc:
+        raise UsageError(f"vendor_unlock 条目非法（需含 'vendor' 的对象）: {exc!r}") from exc
 
     # 故障回报：顶层 vendor_failures 为准（skill 模板 v2），兼容旧 history.vendor_failures
     failures = request.get("vendor_failures") or history.get("vendor_failures") or []
     if isinstance(failures, dict):
         failures = [failures]
-    for failure in failures:
-        trigger = failure.get("trigger", "explicit")
-        if trigger == "quota":            # 套餐/周限额额度尽 → 立即封禁，不计熔断（S12）
-            fallback_events.extend(quotas.block(
-                failure["vendor"], quota_until=float(failure.get("quota_until") or 0.0),
-                reason=failure.get("reason", "quota"), key_id=failure.get("key_id", ""), ts=ts))
-        elif trigger == "rate_limit":     # 并发/瞬时 429 → 重试即可，不计不封
-            continue
-        else:
-            fallback_events.extend(registry.record_failure(failure["vendor"], trigger, ts=ts))
+    try:
+        for failure in failures:
+            trigger = failure.get("trigger", "explicit")
+            if trigger == "quota":        # 套餐/周限额额度尽 → 立即封禁，不计熔断（S12）
+                try:
+                    quota_until = float(failure.get("quota_until") or 0.0)
+                except (TypeError, ValueError) as exc:
+                    # 非数值（如日期字符串 "2027-01-01"）→ 退出码 3，不冒泡 ValueError traceback（契约 0/2/3）
+                    raise UsageError("quota_until 必须是 epoch 秒数值") from exc
+                fallback_events.extend(quotas.block(
+                    failure["vendor"], quota_until=quota_until,
+                    reason=failure.get("reason", "quota"), key_id=failure.get("key_id", ""), ts=ts))
+            elif trigger == "rate_limit":  # 并发/瞬时 429 → 重试即可，不计不封
+                continue
+            else:
+                fallback_events.extend(registry.record_failure(failure["vendor"], trigger, ts=ts))
+    except (TypeError, ValueError, KeyError, AttributeError) as exc:
+        # 容器非可迭代（如 5/true 不可迭代）或条目缺 vendor / 非对象（如字符串，.get 抛 AttributeError）
+        # → exit 3，不冒泡 traceback（容器迭代在 try 内，与 :70/:81 同构；非法只可能来自入参形状）
+        raise UsageError(f"vendor_failures 容器/条目非法（需含 'vendor' 的对象或对象列表）: {exc!r}") from exc
     if fallback_events:
         rationale_parts.append("熔断/额度事件已记录")
 
-    previous_refs = set(history.get("previous_models") or [])
+    # previous_models 为调用方轮换历史（api_ref 字符串数组）；值为 5 时 `or []` 不生效、set()/迭代
+    # 会抛 TypeError，故先取原值校验再复用，exit 3 不冒泡 traceback（契约 decision-cli.md §4）。
+    previous_models = history.get("previous_models") or []
+    if not isinstance(previous_models, (list, tuple)) or any(
+            not isinstance(ref, str) for ref in previous_models):
+        raise UsageError("history.previous_models 必须是字符串数组")
+    previous_refs = set(previous_models)
     producer = request.get("implementer") or None        # review 场景：产出者 {vendor, model}
     if producer and not producer.get("family"):
         # 002 R3：按 api_ref 从两池解析 producer 的 family 注入；查不到 = 独立条目（向后兼容）。
@@ -109,13 +138,18 @@ def decide(request: dict, engine: str = "auto", config_path=None, timeout_ms: in
         if fam_entry is not None:
             producer = {**producer, "family": fam_entry.family}
 
-    def available(pool):
+    def eligible(pool):
+        """派发资格层：order_pool 后剔除封禁/熔断厂商（不看 previous_refs）。"""
         return [e for e in rules.order_pool(pool, cfg.auto.enabled)
-                if registry.available(e.vendor) and quotas.available(e.vendor)
-                and e.api_ref not in previous_refs]
+                if registry.available(e.vendor) and quotas.available(e.vendor)]
 
-    strong = available(cfg.strong) or rules.order_pool(cfg.strong, cfg.auto.enabled)
-    flash = available(cfg.flash) or rules.order_pool(cfg.flash, cfg.auto.enabled)
+    def available(pool):
+        """真正可派层：eligible 中再剔除本轮已轮换过的 api_ref。"""
+        return [e for e in eligible(pool) if e.api_ref not in previous_refs]
+
+    # 池枯竭兜底只允许轮换复位（available 空回退 eligible 重用），永不穿透封禁/熔断。
+    strong = available(cfg.strong) or eligible(cfg.strong)
+    flash = available(cfg.flash) or eligible(cfg.flash)
     # 002 契约 §4（review F3）：复核配对只从真正可用（未封禁/未熔断/未轮换过）的强条目中选择，
     # 不随派发的池枯竭兜底回退全池——兜底不得穿透封禁；枯竭时无 reviewer，走 corrected 显式标记。
     strong_for_review = available(cfg.strong)
@@ -123,20 +157,30 @@ def decide(request: dict, engine: str = "auto", config_path=None, timeout_ms: in
     quotas.save()
 
     # ── 质量升级（FR-010）──────────────────────────────────────
-    escalated = quality_escalated(int(history.get("review_fail_count", 0)), cfg.fallback.quality_review_fails)
+    try:
+        review_fail_count = int(history.get("review_fail_count", 0))
+    except (KeyError, TypeError, ValueError) as exc:
+        # 非数值（如 "abc"）→ exit 3，不冒泡 ValueError traceback（同 R2-7 口径）
+        raise UsageError(f"history.review_fail_count 必须是整数: {history.get('review_fail_count')!r}") from exc
+    escalated = quality_escalated(review_fail_count, cfg.fallback.quality_review_fails)
     pool_name = rules.role_pool(request["role"], cfg.roles)
     avoid_vendors = set()
     if escalated:
         pool_name = "strong"
         if cfg.fallback.switch_vendor and producer:
             avoid_vendors.add(producer.get("vendor"))
-        for ref in history.get("previous_models") or []:
+        for ref in previous_models:     # 复用上面已校验的同一份变量（消除重复读取）
             if "/" in ref:
                 avoid_vendors.add(ref.split("/")[0])
         fallback_events.append(make_event("quality_upgrade", "review_reject", to_model="strong", ts=ts))
-        rationale_parts.append(f"质量升级：review 连败{history.get('review_fail_count')}次，强模型换厂商重做")
+        rationale_parts.append(f"质量升级：review 连败{review_fail_count}次，强模型换厂商重做")
 
     pool = strong if pool_name == "strong" else flash
+    # available 与 eligible 均空 = 候选全部不可用（封禁/熔断/停用）→ 显式 pool_exhausted，不静默降级。
+    pool_exhausted = not pool
+    if pool_exhausted:
+        fallback_events.append(make_event("pool_exhausted", "explicit", ts=ts))
+        rationale_parts.append(f"{pool_name}池枯竭：候选项全部不可用（封禁/熔断/停用），无模型可派发（pool_exhausted）")
 
     # ── 规则基线 ──────────────────────────────────────────────
     task_class = rules.classify(request["task_brief"], request.get("task_class_hint"), request["role"])
@@ -146,7 +190,9 @@ def decide(request: dict, engine: str = "auto", config_path=None, timeout_ms: in
 
     # ── Jev 覆盖（FR-005；失败 fail-open，FR-006）────────────────
     jev_reviewer_ref = None
-    if engine in ("auto", "jev") and not escalated:
+    # 池枯竭时跳过 Jev 调用：候选为空问不出可派发结果（纯网络空转），且失败会把记录翻成
+    # fail_open=true 污染统计；task_class/complexity 保持 rules 基线值。
+    if engine in ("auto", "jev") and not escalated and not pool_exhausted:
         reviewer_pool = [e for e in strong_for_review if not producer
                          or (e.vendor != producer.get("vendor") and not rules.same_origin(e, producer))]
         try:
@@ -159,6 +205,8 @@ def decide(request: dict, engine: str = "auto", config_path=None, timeout_ms: in
             )
             task_class = jev.get("task_class", task_class)
             complexity = jev.get("complexity", complexity)
+            if complexity != "low":      # 二值契约（宁高勿低）：任何非 low 值一律归 high，防越界选项
+                complexity = "high"
             implement_ref = jev.get("implement_ref")
             if implement_ref and pool_name == "flash":
                 match = next((e for e in pool if e.api_ref == implement_ref), None)
@@ -226,6 +274,7 @@ def decide(request: dict, engine: str = "auto", config_path=None, timeout_ms: in
         "task_class": task_class,
         "complexity": complexity,
         "chosen": chosen_ref,
+        "pool_exhausted": pool_exhausted,
         "review_plan": review_plan,
         "fallback_order": fb,
         "engine": engine_used,

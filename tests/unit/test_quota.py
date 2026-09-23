@@ -144,3 +144,14 @@ def test_quota_hints_when_blocked(sample_request, config_path):
     assert hints and "deepseek" in hints[0]
     assert "重置卡" in hints[0] and "余1张" in hints[0]
     assert "自动解锁" in hints[0]
+
+
+def test_quota_hint_includes_year(sample_request, config_path):
+    """003 修复2：自动解锁提示带年份，跨年封禁时不会误导为同年。"""
+    import datetime
+    until = datetime.datetime(2030, 6, 1, 12, 0).timestamp()
+    response = decide(_req(sample_request,
+                           vendor_failures=[{"vendor": "deepseek", "trigger": "quota",
+                                             "quota_until": until}]),
+                      engine="rules", config_path=config_path)
+    assert "2030-" in response["quota_hints"][0]

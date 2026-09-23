@@ -16,8 +16,21 @@ from jev_pi_router.config import ConfigError                      # noqa: E402
 from jev_pi_router.decide import UsageError, decide              # noqa: E402
 
 
+class DecideArgumentParser(argparse.ArgumentParser):
+    """用法错误统一退出码 3（契约 decision-cli.md §4：2=配置错误、3=参数/输入非法）。
+
+    argparse 默认 sys.exit(2) 与配置错误同码，会误导调用方；此处覆写 error()：
+    打印 usage + 结构化 error JSON 到 stderr 后按 3 退出（stdout 仍保持“永远是合法 JSON”）。
+    """
+
+    def error(self, message: str):                                  # noqa: A003
+        self.print_usage(sys.stderr)
+        print(json.dumps({"error": f"参数非法: {message}"}, ensure_ascii=False), file=sys.stderr)
+        sys.exit(3)
+
+
 def main() -> int:
-    parser = argparse.ArgumentParser(prog="jev-pi-decide")
+    parser = DecideArgumentParser(prog="jev-pi-decide")
     parser.add_argument("--engine", choices=("auto", "rules", "jev"), default="auto")
     parser.add_argument("--timeout-ms", type=int, default=None)
     parser.add_argument("--config", default=None, help="router.config.yaml 路径")

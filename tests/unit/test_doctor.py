@@ -3,6 +3,7 @@
 import importlib.machinery
 import importlib.util
 import json
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -52,3 +53,53 @@ def test_missing_key_and_family_mismatch_warned(tmp_path):
     assert any("qianwenai/glm-5.3 缺少缓存声明" in w for w in warns)
     entries = [dict(ENTRIES[0]), {**ENTRIES[1], "family": ""}]   # 一方未声明 family
     assert any("疑似同源" in w for w in doctor._check_warnings(entries, str(manifest)))
+
+
+# ── 003 修复4：--config 默认值为仓库根绝对路径（环境变量仍优先）──────────────
+
+def test_default_config_is_absolute_repo_root(monkeypatch):
+    """未传 --config 且无环境变量时，默认指向仓库根 router.config.yaml（绝对路径）。"""
+    captured = {}
+
+    def fake_check(config):
+        captured["config"] = config
+        return 0
+
+    monkeypatch.setattr(doctor, "cmd_check", fake_check)
+    monkeypatch.delenv("JEV_PI_ROUTER_CONFIG", raising=False)
+    monkeypatch.setattr(sys, "argv", ["jev-pi-doctor", "check"])
+    doctor.main()
+    default = Path(captured["config"])
+    assert default.is_absolute()
+    assert default == ROOT / "router.config.yaml"
+
+
+def test_env_config_still_wins_over_default(monkeypatch):
+    """环境变量 JEV_PI_ROUTER_CONFIG 优先级高于仓库根默认路径。"""
+    captured = {}
+
+    def fake_check(config):
+        captured["config"] = config
+        return 0
+
+    monkeypatch.setattr(doctor, "cmd_check", fake_check)
+    monkeypatch.setenv("JEV_PI_ROUTER_CONFIG", "/tmp/custom-router.yaml")
+    monkeypatch.setattr(sys, "argv", ["jev-pi-doctor", "check"])
+    doctor.main()
+    assert captured["config"] == "/tmp/custom-router.yaml"
+
+
+def test_empty_env_config_falls_back_to_default(monkeypatch):
+    """R2-1：JEV_PI_ROUTER_CONFIG="" 视为未设置（与 config.py 同语义），不把空串当作路径。"""
+    captured = {}
+
+    def fake_check(config):
+        captured["config"] = config
+        return 0
+
+    monkeypatch.setattr(doctor, "cmd_check", fake_check)
+    monkeypatch.setenv("JEV_PI_ROUTER_CONFIG", "")
+    monkeypatch.setattr(sys, "argv", ["jev-pi-doctor", "check"])
+    doctor.main()
+    assert captured["config"] == doctor.DEFAULT_CONFIG
+    assert Path(captured["config"]).is_absolute()
