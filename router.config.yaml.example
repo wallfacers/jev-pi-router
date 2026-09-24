@@ -38,6 +38,7 @@ flash_pool:
   - vendor: deepseek
     model: deepseek-flash
     api_ref: deepseek/deepseek-flash
+    family: deepseek-flash         # 与 opencode-go/deepseek-flash 同底层模型
     cost_hint: 0.15
     cache_passthrough: full       # api.deepseek.com 官方直连，厂商侧缓存已知存在
     enabled: true
@@ -57,6 +58,7 @@ flash_pool:
   - vendor: opencode-go
     model: deepseek-flash
     api_ref: opencode-go/deepseek-flash
+    family: deepseek-flash         # 与 deepseek/deepseek-flash 同源
     cost_hint: 0.1
     cache_passthrough: unknown    # 中转，doctor probe 实测项
     enabled: true

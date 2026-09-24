@@ -5,7 +5,8 @@ import urllib.request
 import pytest
 
 from jev_pi_router import jev_client
-from jev_pi_router.jev_client import JevError, _api_key, _endpoint, _headers, _model_id
+from jev_pi_router.jev_client import (JevError, _api_key, _endpoint, _headers, _model_id,
+                                      _normalize_complexity, _validate_choice)
 
 
 @pytest.fixture()
@@ -128,3 +129,23 @@ def test_api_key_whitespace_only_env_falls_through(no_env_keys, tmp_path):
     assert _api_key() == "sk-gateway"
     no_env_keys.delenv("AI_GATEWAY_API_KEY")
     assert _api_key() == "sk-file"
+
+
+# ── R2-5：complexity 宽容归一（只降级该字段；task_class 等硬键仍严格）─────────
+
+def test_validate_choice_still_strict_for_hard_keys():
+    """task_class/implement_ref/reviewer_ref 走的严格校验不变：越界即 JevError。"""
+    criteria = {"design": "…", "implement": "…"}
+    assert _validate_choice({"choice": "design"}, criteria) == "design"
+    with pytest.raises(JevError, match="非法选项"):
+        _validate_choice({"choice": "medium"}, criteria)
+
+
+def test_normalize_complexity_maps_out_of_range_to_high():
+    """complexity 越界/缺失归一为 high（宁高勿低），不抛错。"""
+    criteria = {"low": "低风险", "high": "高风险"}
+    assert _normalize_complexity({"choice": "low"}, criteria) == "low"
+    assert _normalize_complexity({"choice": "high"}, criteria) == "high"
+    assert _normalize_complexity({"choice": "medium"}, criteria) == "high"   # 已废弃三值档
+    assert _normalize_complexity({}, criteria) == "high"                       # 缺失
+    assert _normalize_complexity({"choice": None}, criteria) == "high"

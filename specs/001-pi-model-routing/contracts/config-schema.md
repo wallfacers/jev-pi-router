@@ -110,6 +110,7 @@ b_mode:
 | `cache_passthrough` ∈ {full, partial, none, unknown}；路由权重序 full > partial > unknown > none | R8 |
 | `fallback.breaker.window_sec` / `window_failures` / `api_ref_cooldown_sec` 均 ≥ 1（v1.4 条目级滑窗；`window_failures=1` = 单次失败即冷却，合法但激进） | v1.4 |
 | 配置变更即时生效（每次决策重新加载） | FR-013 |
+| 配置路径解析优先级：显式 path 参数 > 环境变量 `JEV_PI_ROUTER_CONFIG`（空值视为未设置）> 仓库根 `router.config.yaml` 绝对路径（与 cwd 无关） | FR-013 |
 
 ## pi 侧配套（非本文件，安装时合并）
 

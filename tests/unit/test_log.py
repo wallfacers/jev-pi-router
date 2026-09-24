@@ -109,3 +109,18 @@ def test_invariant_reason_event_pairing_enforced():
             fallback_events=[{"type": "degrade_same_origin", "trigger": "explicit", "ts": ""}]))
     validate_record(base_record(review_plan=plan, fallback_events=[
         {"type": "degrade_same_origin", "trigger": "explicit", "ts": ""}]))    # 正确配对通过
+
+
+def test_invariant_degrade_reason_events_mutually_exclusive():
+    """归因唯一（002 I1）：degrade_reason 与另一降级事件同时出现 ⇒ 拒绝落盘。"""
+    plan = {"code_reviewer": None, "plan_reviewers": [], "degrade": True, "degrade_reason": "same_origin"}
+    with pytest.raises(LogError, match="归因唯一"):
+        validate_record(base_record(review_plan=plan, fallback_events=[
+            {"type": "degrade_same_origin", "trigger": "explicit", "ts": ""},
+            {"type": "degrade_single_vendor", "trigger": "explicit", "ts": ""}]))
+    with pytest.raises(LogError, match="归因唯一"):
+        validate_record(base_record(
+            review_plan={**plan, "degrade_reason": "single_vendor"},
+            fallback_events=[
+                {"type": "degrade_single_vendor", "trigger": "explicit", "ts": ""},
+                {"type": "degrade_same_origin", "trigger": "explicit", "ts": ""}]))

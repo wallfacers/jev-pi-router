@@ -22,8 +22,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(
 import yaml                                             # noqa: E402
 
 PI_MODELS_JSON = os.path.expanduser("~/.pi/agent/models.json")
-PROMPTCACHE_JSON = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                                "pi", "models.promptcache.json")
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+PROMPTCACHE_JSON = os.path.join(ROOT, "pi", "models.promptcache.json")
+DEFAULT_CONFIG = os.path.join(ROOT, "router.config.yaml")
 PROBE_UA = "claude-cli/2.0.14 (external, cli)"   # Cloudflare 拦截 python-urllib 默认 UA（error 1010）
 LONG_PREFIX = ("你是一个代码评审助手。以下是项目约定的详细上下文，包含目录结构、编码规范、"
                "测试要求与发布流程。请在回答任何问题前完整阅读并遵循这些约定。") * 40  # ≥1000 tokens
@@ -242,7 +243,7 @@ def cmd_cards(vendor: str, add: int = 0) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(prog="jev-pi-doctor")
-    parser.add_argument("--config", default=os.environ.get("JEV_PI_ROUTER_CONFIG", "router.config.yaml"))
+    parser.add_argument("--config", default=os.environ.get("JEV_PI_ROUTER_CONFIG") or DEFAULT_CONFIG)
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("check")
     sub.add_parser("quotas", help="查看厂商套餐额度封禁表")

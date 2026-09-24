@@ -14,8 +14,12 @@ from dataclasses import dataclass, field
 
 from .log import home_dir
 
-TRIGGERS = {"timeout", "http_5xx", "quota", "rate_limit", "review_reject", "explicit",
-            "empty_response"}
+# 已知 trigger 值参考集（与 specs/001-pi-model-routing/contracts/decision-log-schema.md
+# FallbackEvent.trigger 同步）。trigger 是调用方可扩展的开集，实现按 vendor_failures[].trigger
+# 原样透传、不做运行时校验；本集合仅作文档锚点，不参与任何运行行为。
+# v1.4 新增 empty_response（零内容零 token 退化循环，见 contracts/decision-cli.md v1.4 节）。
+TRIGGERS = {"timeout", "http_5xx", "auth", "quota", "rate_limit", "review_reject",
+            "explicit", "auto", "manual", "reset_card", "activity", "empty_response"}
 
 
 def make_event(type_: str, trigger: str, from_model: str | None = None, to_model: str | None = None,

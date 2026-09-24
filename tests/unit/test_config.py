@@ -1,5 +1,7 @@
 """config 加载/校验单测（contracts/config-schema.md 校验规则表）。"""
 
+from pathlib import Path
+
 import pytest
 
 from jev_pi_router.config import ConfigError, load_config
@@ -160,3 +162,72 @@ def test_promptcache_manifest_covers_all_pool_entries():
     refs = {item["api_ref"] for pool in ("strong_pool", "flash_pool") for item in data.get(pool) or []}
     keys = set(json.loads((root / "pi/models.promptcache.json").read_text(encoding="utf-8"))["promptCache"])
     assert refs <= keys
+
+
+def test_deepseek_flash_pair_shares_family():
+    """review 修复 D：deepseek-flash 双渠道同底层模型对声明同 family（实质同源互斥）。"""
+    from pathlib import Path
+
+    import yaml
+
+    root = Path(__file__).resolve().parents[2]
+    data = yaml.safe_load((root / "router.config.yaml.example").read_text(encoding="utf-8"))
+    fams = {item["api_ref"]: item.get("family", "")
+            for pool in ("strong_pool", "flash_pool") for item in data.get(pool) or []}
+    assert fams["deepseek/deepseek-flash"] == "deepseek-flash"
+    assert fams["opencode-go/deepseek-flash"] == "deepseek-flash"
+
+
+# ── 003 修复4：默认配置路径为仓库根绝对路径（与 cwd 无关）────────────────────
+
+def test_default_config_is_repo_root_absolute(tmp_path, monkeypatch):
+    """无显式 path/env 时 load_config() 解析到 REPO_ROOT 下的 router.config.yaml（cwd 无关）。
+
+    仓库根 router.config.yaml 被 gitignore，fresh clone 不存在——故把 REPO_ROOT 指向 tmp_path
+    并在其中写入配置，断言默认路径拼装语义（绝对路径 + cwd 无关）而非依赖本机文件。
+    """
+    import jev_pi_router.config as config_module
+
+    monkeypatch.setattr(config_module, "REPO_ROOT", tmp_path)
+    monkeypatch.delenv("JEV_PI_ROUTER_CONFIG", raising=False)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "router.config.yaml").write_text(BASE, encoding="utf-8")
+    cfg = load_config()
+    assert cfg.strong and cfg.flash
+    assert Path(cfg.source_path).is_absolute()
+    assert Path(cfg.source_path) == tmp_path / "router.config.yaml"
+
+
+def test_empty_env_config_treated_as_unset(tmp_path, monkeypatch):
+    """空字符串 JEV_PI_ROUTER_CONFIG 视为未设置（与 config.py 语义一致，不报 open("") 错）。"""
+    import jev_pi_router.config as config_module
+
+    monkeypatch.setattr(config_module, "REPO_ROOT", tmp_path)
+    (tmp_path / "router.config.yaml").write_text(BASE, encoding="utf-8")
+    monkeypatch.setenv("JEV_PI_ROUTER_CONFIG", "")
+    assert Path(load_config().source_path) == tmp_path / "router.config.yaml"
+
+
+def test_explicit_path_still_wins_over_default(tmp_path, monkeypatch):
+    """显式 path 参数优先级高于默认仓库根路径。"""
+    monkeypatch.delenv("JEV_PI_ROUTER_CONFIG", raising=False)
+    path = write_cfg(tmp_path, BASE)
+    assert Path(load_config(path).source_path) == path
+
+
+def test_env_config_wins_over_repo_root_default(tmp_path, monkeypatch):
+    """R3-3：env > 默认分支直接用例——JEV_PI_ROUTER_CONFIG（A）胜过 REPO_ROOT 下的配置（B）。
+
+    A/B 是两个不同路径才有判别力：若误走默认分支，source_path 会落在 elsewhere 而非 A。
+    """
+    import jev_pi_router.config as config_module
+
+    env_cfg = tmp_path / "env" / "custom-router.config.yaml"   # A：env 指定的配置
+    env_cfg.parent.mkdir()
+    env_cfg.write_text(BASE, encoding="utf-8")
+    repo = tmp_path / "elsewhere"                               # B：仓库根默认配置（内容不同）
+    repo.mkdir()
+    (repo / "router.config.yaml").write_text(BASE.replace("deepseek-flash", "other-flash"), encoding="utf-8")
+    monkeypatch.setenv("JEV_PI_ROUTER_CONFIG", str(env_cfg))
+    monkeypatch.setattr(config_module, "REPO_ROOT", repo)
+    assert Path(load_config().source_path) == env_cfg

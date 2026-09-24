@@ -36,8 +36,11 @@
 |---------|--------|
 | glm/glm-5.3 | glm-5.3 |
 | relay/cmd-deepseek-v4.1-flash | deepseek-v4.1-flash |
+| deepseek/deepseek-flash | deepseek-flash |
+| opencode-go/deepseek-flash | deepseek-flash |
 
-其余既有条目不声明 family（独立），行为零变化。
+其余既有条目（mimo、glm/glm-5.3-flash 等）不声明 family（独立），行为零变化。
+（deepseek-flash 双渠道对为 review 修复轮次补充：同底层模型实质同源互斥优先于最小变更。）
 
 ## 2. review_plan（决策响应内嵌结构）——字段增量
 

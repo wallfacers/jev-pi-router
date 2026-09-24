@@ -4,7 +4,9 @@ import json
 import os
 from copy import deepcopy
 
-from jev_pi_router.decide import decide
+import pytest
+
+from jev_pi_router.decide import UsageError, decide
 
 
 def _req(sample_request, **overrides):
@@ -186,8 +188,9 @@ def test_vendor_success_with_api_ref_restores_entry(sample_request, config_path)
     assert RELAY_REF in {e["api_ref"] for e in response["fallback_order"]}
 
 
-def test_pool_exhaustion_demotes_but_does_not_exclude(sample_request, config_path):
-    """兜底不穿透排除：flash 池全条目冷却 → chosen 仍非 None（不破坏 CLI 契约）。"""
+def test_all_flash_cooled_pool_exhausted(sample_request, config_path):
+    """v1.4 × 003 语义合流：条目冷却与封禁/熔断同属**不可穿透**信号——flash 全条目冷却、
+    轮换复位后（eligible）仍全冷却 → 显式池枯竭（chosen=null），不静默派回冷却条目。"""
     import yaml
     refs = [i["api_ref"] for i in
             yaml.safe_load(config_path.read_text(encoding="utf-8"))["flash_pool"]]
@@ -195,5 +198,222 @@ def test_pool_exhaustion_demotes_but_does_not_exclude(sample_request, config_pat
                 for r in refs for _ in range(2)]
     response = decide(_req(sample_request, vendor_failures=failures),
                       engine="rules", config_path=config_path)
-    assert response["chosen"] is not None
-    assert response["chosen"]["pool"] == "flash"
+    assert response["chosen"] is None and response["pool_exhausted"] is True
+    types = [e["type"] for e in response["fallback_events"]]
+    assert "api_ref_cooldown" in types and "pool_exhausted" in types
+
+
+# ── review 修复回归：Jev reviewer 消费（A）/ family 注入健壮化（B）────────────
+
+def _fake_jev(pick_reviewer=None):
+    def fake(task_brief, risk_tags, implement_candidates, reviewer_candidates, timeout_ms=2000):
+        out = {"task_class": "implement", "complexity": "low"}
+        if pick_reviewer is not None:
+            out["reviewer_ref"] = pick_reviewer   # 显式指定（含模拟 Jev 异常越池返回）
+        elif reviewer_candidates:
+            out["reviewer_ref"] = reviewer_candidates[0]["api_ref"]
+        return out
+    return fake
+
+
+def test_jev_reviewer_accepted_when_valid(sample_request, config_path, monkeypatch):
+    """fix A：Jev 的合法 reviewer 直接采纳（此前被静默丢弃）。"""
+    from jev_pi_router import jev_client
+    monkeypatch.setattr(jev_client, "decide", _fake_jev("glm/glm-5.3"))
+    request = _req(sample_request,
+                   implementer={"vendor": "deepseek", "model": "deepseek-flash",
+                                "api_ref": "deepseek/deepseek-flash"})
+    response = decide(request, engine="jev", config_path=config_path)
+    rp = response["review_plan"]
+    assert rp["code_reviewer"]["api_ref"] == "glm/glm-5.3"
+    assert rp["degrade"] is False
+    assert "[pairing-corrected]" not in response["rationale"]
+
+
+def test_jev_same_origin_reviewer_corrected(sample_request, config_path, monkeypatch):
+    """fix A/002 契约 §4：Jev 返回同源 reviewer → 丢弃、三级重选、[pairing-corrected]。"""
+    from jev_pi_router import jev_client
+    monkeypatch.setattr(jev_client, "decide", _fake_jev("glm/glm-5.3"))  # 与 producer 同 family
+    request = _req(sample_request,
+                   implementer={"vendor": "qianwenai", "model": "glm-5.3",
+                                "api_ref": "qianwenai/glm-5.3"})
+    response = decide(request, engine="jev", config_path=config_path)
+    rp = response["review_plan"]
+    assert "[pairing-corrected]" in response["rationale"]
+    assert rp["code_reviewer"]["api_ref"] == "mimo/mimo-v2.6-pro"   # 真异源重选
+    assert rp["degrade"] is False
+
+
+def test_jev_same_origin_reviewer_fallback_degrades(sample_request, config_path, monkeypatch, tmp_path):
+    """fix A：真异源枯竭时 Jev 非法选择的重选落到同源兜底（degrade + 归因 same_origin）。"""
+    import yaml
+    from jev_pi_router import jev_client
+    data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    data["strong_pool"] = [i for i in data["strong_pool"]
+                           if i["api_ref"] in ("glm/glm-5.3", "qianwenai/glm-5.3")]
+    cfg = tmp_path / "router.config.yaml"
+    cfg.write_text(yaml.safe_dump(data, allow_unicode=True), encoding="utf-8")
+    monkeypatch.setattr(jev_client, "decide", _fake_jev("glm/glm-5.3"))
+    request = _req(sample_request,
+                   implementer={"vendor": "qianwenai", "model": "glm-5.3",
+                                "api_ref": "qianwenai/glm-5.3"})
+    response = decide(request, engine="jev", config_path=cfg)
+    rp = response["review_plan"]
+    assert "[pairing-corrected]" in response["rationale"]
+    assert rp["degrade"] is True and rp["degrade_reason"] == "same_origin"
+    assert rp["code_reviewer"]["api_ref"] == "glm/glm-5.3"
+    assert "degrade_same_origin" in [e["type"] for e in response["fallback_events"]]
+
+
+def test_jev_reviewer_not_requested_without_producer(sample_request, config_path, monkeypatch):
+    """fix A：无 implementer 时 reviewer 问项不再发起（答案无消费方）。"""
+    from jev_pi_router import jev_client
+    seen = {}
+
+    def fake(task_brief, risk_tags, implement_candidates, reviewer_candidates, timeout_ms=2000):
+        seen["reviewers"] = reviewer_candidates
+        return {"task_class": "implement", "complexity": "low"}
+
+    monkeypatch.setattr(jev_client, "decide", fake)
+    decide(sample_request, engine="jev", config_path=config_path)   # implementer=None
+    assert seen["reviewers"] == []
+
+
+def test_producer_family_injection_loose_match(sample_request, config_path):
+    """fix B：api_ref 缺失/大小写混乱/别名时按 vendor/model 兜底注入 family。"""
+    request = _req(sample_request,
+                   implementer={"vendor": "QianwenAI", "model": "GLM-5.3"})
+    response = decide(request, engine="rules", config_path=config_path)
+    assert response["review_plan"]["implementer"]["family"] == "glm-5.3"
+    request = _req(sample_request,
+                   implementer={"vendor": "qianwenai", "model": "glm-5.3",
+                                "api_ref": "qianwenai/glm-5.3-alias"})
+    response = decide(request, engine="rules", config_path=config_path)
+    assert response["review_plan"]["implementer"]["family"] == "glm-5.3"
+
+
+# ── 003 修复3：complexity 二值契约（宁高勿低）──────────────────────────────
+
+def test_jev_complexity_non_low_normalized_high(sample_request, config_path, monkeypatch):
+    """Jev 返回越界/三值 complexity（medium）→ 防御归一为 high（永不落到已废弃档位）。"""
+    from jev_pi_router import jev_client
+    monkeypatch.setattr(jev_client, "decide",
+                        lambda brief, tags, impl, rev, timeout_ms=2000:
+                        {"task_class": "implement", "complexity": "medium"})
+    response = decide(sample_request, engine="jev", config_path=config_path)
+    assert response["complexity"] == "high"
+
+
+# ── R2-5/R2-7：complexity 宽容归一不整体 fail-open；quota_until 非数值走 UsageError ──
+
+
+def test_jev_complexity_out_of_range_degrades_field_only(sample_request, config_path, monkeypatch):
+    """R2-5：真实 jev_client 路径返回 complexity="medium" → 只降级该字段为 high，
+    engine=jev、fail_open=False（不因单一软字段把整条决策翻成 fallback）。"""
+    from jev_pi_router import jev_client
+
+    def fake_post(body, timeout_s):
+        questions = body["questions"]
+        answers = {"task_class": {"choice": "implement"}, "complexity": {"choice": "medium"}}
+        for qid in ("implement_model", "reviewer"):   # 其余问项给合法答案，隔离单一字段行为
+            if qid in questions:
+                answers[qid] = {"choice": next(iter(questions[qid]["criteria"]))}
+        return {"answers": answers}
+
+    monkeypatch.setattr(jev_client, "_post", fake_post)
+    response = decide(sample_request, engine="jev", config_path=config_path)
+    assert response["complexity"] == "high"
+    assert response["task_class"] == "implement"
+    assert response["engine"] == "jev" and response["fail_open"] is False
+
+
+def test_jev_task_class_out_of_range_still_fail_open(sample_request, config_path, monkeypatch):
+    """R2-5：task_class 越界仍严格校验 → 整体 fail-open 回退规则（硬派发键不可容忍）。"""
+    from jev_pi_router import jev_client
+    monkeypatch.setattr(jev_client, "_post", lambda body, timeout_s: {"answers": {
+        "task_class": {"choice": "bugfix"}, "complexity": {"choice": "low"}}})
+    response = decide(sample_request, engine="jev", config_path=config_path)
+    assert response["engine"] == "rules" and response["fail_open"] is True
+    assert response["task_class"] == "implement"          # 规则基线值
+
+
+def test_quota_until_non_numeric_raises_usage_error(sample_request, config_path):
+    """R2-7：quota_until 为日期字符串 → UsageError（CLI exit 3），不冒泡 ValueError traceback。"""
+    request = _req(sample_request, vendor_failures=[
+        {"vendor": "deepseek", "trigger": "quota", "quota_until": "2027-01-01"}])
+    with pytest.raises(UsageError, match="quota_until"):
+        decide(request, engine="rules", config_path=config_path)
+
+
+# ── R3-4：输入校验加固（非法字段→UsageError，不冒泡 KeyError/ValueError traceback）──
+
+
+def test_review_fail_count_non_numeric_raises_usage_error(sample_request, config_path):
+    """R3-4：history.review_fail_count 非数值 → UsageError（CLI exit 3）。"""
+    request = _req(sample_request, history={"review_fail_count": "abc", "previous_models": []})
+    with pytest.raises(UsageError, match="review_fail_count"):
+        decide(request, engine="rules", config_path=config_path)
+
+
+def test_vendor_failures_entry_missing_vendor_raises_usage_error(sample_request, config_path):
+    """R3-4：vendor_failures 条目缺 "vendor" 键 → UsageError（CLI exit 3），不冒泡 KeyError。"""
+    request = _req(sample_request, vendor_failures=[{}])
+    with pytest.raises(UsageError, match="vendor_failures"):
+        decide(request, engine="rules", config_path=config_path)
+
+
+def test_vendor_unlock_entry_missing_vendor_raises_usage_error(sample_request, config_path):
+    """R3-4：vendor_unlock 条目缺 "vendor" 键同样走 UsageError（与 failures 同口径）。"""
+    request = _req(sample_request, vendor_unlock=[{"reason": "manual"}])
+    with pytest.raises(UsageError, match="vendor_unlock"):
+        decide(request, engine="rules", config_path=config_path)
+
+
+# ── R4：vendor_failures 容器级校验 + vendor_success 条目校验补测 ────────────────────
+
+
+@pytest.mark.parametrize("value", [5, True])
+def test_vendor_failures_container_non_iterable_raises_usage_error(value, sample_request, config_path):
+    """R4-1：vendor_failures 容器为非法形状（如 5/true）→ UsageError（CLI exit 3），不冒泡 TypeError。"""
+    request = _req(sample_request, vendor_failures=value)
+    with pytest.raises(UsageError, match="vendor_failures"):
+        decide(request, engine="rules", config_path=config_path)
+
+
+def test_vendor_success_entry_missing_vendor_raises_usage_error(sample_request, config_path):
+    """R4-2：vendor_success 条目缺 "vendor" 键 → UsageError（CLI exit 3），不冒泡 KeyError。"""
+    request = _req(sample_request, vendor_success=[{}])
+    with pytest.raises(UsageError, match="vendor_success"):
+        decide(request, engine="rules", config_path=config_path)
+
+
+# ── R5-1：非法输入形状守卫（非对象 request/history/previous_models → UsageError）──────
+
+
+def test_non_object_request_raises_usage_error():
+    """R5-1：request 顶层非对象（如 stdin 合法 JSON 5）→ UsageError（CLI exit 3），
+    不冒泡 request.get 的 AttributeError。"""
+    with pytest.raises(UsageError, match="JSON 对象"):
+        decide(5)
+
+
+def test_history_non_object_raises_usage_error(sample_request, config_path):
+    """R5-1：history=5（非对象）→ UsageError（CLI exit 3），不冒泡 history.get 的 AttributeError。"""
+    request = _req(sample_request, history=5)
+    with pytest.raises(UsageError, match="history"):
+        decide(request, engine="rules", config_path=config_path)
+
+
+def test_previous_models_non_array_raises_usage_error(sample_request, config_path):
+    """R5-1：history.previous_models=5（`or []` 不生效）→ UsageError，不冒泡 set() 的 TypeError。"""
+    request = _req(sample_request, history={"review_fail_count": 0, "previous_models": 5})
+    with pytest.raises(UsageError, match="previous_models"):
+        decide(request, engine="rules", config_path=config_path)
+
+
+def test_previous_models_non_array_escalated_raises_usage_error(sample_request, config_path):
+    """R5-1：escalated 分支（review_fail_count=2，会迭代 previous_models）下值为 5 →
+    同一守卫 UsageError，不冒泡迭代的 TypeError。"""
+    request = _req(sample_request, history={"review_fail_count": 2, "previous_models": 5})
+    with pytest.raises(UsageError, match="previous_models"):
+        decide(request, engine="rules", config_path=config_path)

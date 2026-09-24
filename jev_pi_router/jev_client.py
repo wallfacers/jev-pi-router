@@ -141,6 +141,18 @@ def _validate_choice(answer: dict, criteria: dict) -> str:
     return choice
 
 
+def _normalize_complexity(answer: dict, criteria: dict) -> str:
+    """complexity 宽容归一：越界/缺失值只降级该字段为 high（宁高勿低），不抛 JevError。
+
+    task_class/implement_ref/reviewer_ref 仍走 _validate_choice 严格校验——那些是硬派发键，
+    非法值会让整条决策不可信；complexity 仅影响档位提示，降级比整体 fail-open 代价小。
+    """
+    choice = answer.get("choice")
+    if choice not in criteria:
+        return "high"
+    return choice
+
+
 def decide(task_brief: str, risk_tags: list, implement_candidates: list, reviewer_candidates: list,
            timeout_ms: int = 2000) -> dict:
     """一次请求并发四问（task_class / complexity / implement_model / reviewer）。
@@ -159,7 +171,7 @@ def decide(task_brief: str, risk_tags: list, implement_candidates: list, reviewe
         },
         "complexity": {
             "type": "choice",
-            "criteria": {"low": "低风险、边界清晰", "medium": "一般复杂度", "high": "高风险或跨模块影响大"},
+            "criteria": {"low": "低风险、边界清晰", "high": "高风险或跨模块影响大"},
             "instructions": {"goal": "评估复杂度", "rules": ["risk_tags 提示高风险时倾向 high"]},
         },
     }
@@ -197,7 +209,9 @@ def decide(task_brief: str, risk_tags: list, implement_candidates: list, reviewe
     answers = result.get("answers") or {}
     out = {
         "task_class": _validate_choice(answers.get("task_class", {}), questions["task_class"]["criteria"]),
-        "complexity": _validate_choice(answers.get("complexity", {}), questions["complexity"]["criteria"]),
+        # complexity 宽容归一（宁高勿低）：越界/缺失不整体 JevError，只降级该字段为 high
+        "complexity": _normalize_complexity(answers.get("complexity", {}),
+                                            questions["complexity"]["criteria"]),
     }
     if implement_candidates:
         out["implement_ref"] = _validate_choice(

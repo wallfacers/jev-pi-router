@@ -13,8 +13,8 @@ Phase 1 输出。每次路由决策追加一行 JSON（只增不改），路径 
 | task_ref | string | 任务关联键 |
 | role | enum | orchestrator \| plan \| decision \| review \| fallback_arbiter \| implement |
 | task_class | enum | design \| implement \| chore |
-| complexity | enum | low \| medium \| high |
-| chosen | object | {vendor, model, api_ref, pool} |
+| complexity | enum | low \| high |
+| chosen | object\|null | {vendor, model, api_ref, pool}；池枯竭时为 null（见 decision-cli.md 语义约定） |
 | review_plan | object | {code_reviewer?, plan_reviewers[], degrade}（同 decision-cli response） |
 | engine | enum | jev \| rules |
 | fail_open | bool | 是否发生 Jev→rules 回退（FR-006） |
@@ -25,12 +25,17 @@ Phase 1 输出。每次路由决策追加一行 JSON（只增不改），路径 
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| type | enum | fault_transfer \| quality_upgrade \| breaker_open \| breaker_close \| degrade_single_vendor \| pool_exhausted \| api_ref_cooldown \| api_ref_recover |
+| type | enum | fault_transfer \| quality_upgrade \| breaker_open \| breaker_close \| degrade_single_vendor \| degrade_same_origin \| pool_exhausted \| quota_block \| quota_unlock \| api_ref_cooldown \| api_ref_recover |
 | from_model | string\|null | api_ref |
 | to_model | string\|null | api_ref；无迁移为 null；条目级事件（api_ref_cooldown / api_ref_recover）承载 api_ref |
-| trigger | enum | timeout \| http_5xx \| quota \| rate_limit \| review_reject \| explicit \| empty_response |
+| trigger | enum | timeout \| http_5xx \| auth \| quota \| rate_limit \| review_reject \| explicit \| auto \| manual \| reset_card \| activity \| empty_response |
 | attempt | int | 从 1 起 |
 | ts | string | ISO 8601 |
+
+> `trigger` 为调用方可扩展的开集，此枚举为已知值集合（实现按 `vendor_failures[].trigger` 原样透传）；
+> `quota_block`/`quota_unlock` 的 trigger 即封禁/解锁原因（quota / auto / manual / reset_card / activity）；
+> `degrade_same_origin` / `degrade_single_vendor` 为 review 配对层级②/③的降级归因（见 data-model.md ReviewPairing）。
+> 本次未产生的事件不占位；`fallback_events: []` = 无任何兜底动作。
 
 ## 示例
 

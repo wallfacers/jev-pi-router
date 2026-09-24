@@ -36,16 +36,18 @@ Phase 1 输出。实体来源于 spec Key Entities；校验规则溯源至 FR；
 **硬约束后置覆盖**：即使 Jev 返回违反上述约束的配对，rules 层强制修正并记录修正痕迹（契约见 contracts/decision-cli.md）。
 
 ### RouteDecision（路由决策记录 → 决策日志）
-decision_id（uuid）、ts、session_id_hash（哈希不存原文）、task_ref、task_class（design \| implement \| chore）、complexity（low \| medium \| high）、role、chosen（vendor/model/api_ref）、review_plan、engine（jev \| rules）、fail_open、fallback_events[]。（完整 schema 见 contracts/decision-log-schema.md）
+decision_id（uuid）、ts、session_id_hash（哈希不存原文）、task_ref、task_class（design \| implement \| chore）、complexity（low \| high）、role、chosen（vendor/model/api_ref；池枯竭时为 null）、review_plan、engine（jev \| rules）、fail_open、fallback_events[]。（完整 schema 见 contracts/decision-log-schema.md）
 
 ### FallbackEvent（兜底事件）
 | 字段 | 说明 |
 |------|------|
-| type | fault_transfer \| quality_upgrade \| breaker_open \| breaker_close \| degrade_single_vendor \| pool_exhausted \| api_ref_cooldown \| api_ref_recover |
-| from_model / to_model | 迁移两端（api_ref），无迁移则 to_model 为 null；条目级事件 to_model 承载 api_ref |
-| trigger | timeout \| http_5xx \| quota \| rate_limit \| review_reject \| explicit \| empty_response |
+| type | fault_transfer \| quality_upgrade \| breaker_open \| breaker_close \| degrade_single_vendor \| degrade_same_origin \| pool_exhausted \| quota_block \| quota_unlock \| api_ref_cooldown \| api_ref_recover |
+| from_model / to_model | 迁移两端（api_ref），无迁移则 to_model 为 null；条目级事件（api_ref_cooldown / api_ref_recover）承载 api_ref |
+| trigger | timeout \| http_5xx \| auth \| quota \| rate_limit \| review_reject \| explicit \| auto \| manual \| reset_card \| activity \| empty_response |
 | attempt | 第几次尝试（1 起） |
 | ts | ISO 时间戳 |
+
+（`trigger` 为调用方可扩展的开集，此枚举为已知值集合；实现按 `vendor_failures[].trigger` 原样透传。）
 
 ### BreakerState（熔断状态，运行时态，按 vendor 键）
 - 字段：consecutive_failures、state（closed \| open \| half_open）、open_until。
