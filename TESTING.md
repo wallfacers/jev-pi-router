@@ -8,15 +8,16 @@
 - [x] `router.config.yaml` 就位，`cache_passthrough` 已实测回填：relay=`partial`、opencode-go=`full`、deepseek=`full`
 - [x] promptCache 已合入 `~/.pi/agent/models.json`（8 个模型）
 - [x] `~/.pi/agent/settings.json` → `cacheWarming: "idle"`（缓存保活）
-- [x] 路由技能已安装 `~/.pi/agent/skills/jev-pi-router/`（绝对路径调用，任意目录可用）
+- [x] 路由技能已**软链**安装 `~/.pi/agent/skills/jev-pi-router` → 本仓库 `pi/skills/jev-pi-router`
+      （仓库改动即时生效，无需复制；仓库根按技能 §Repo Root 动态解析，任意目录可用）
 - 备份：`~/.pi/agent/{models,settings}.json.bak-jev-pi`（回滚：覆盖回去即可）
 
 ## V7 — pi 端到端（预计 5 分钟）
 
 1. **新开 pi 会话**（任意项目目录均可），输入测试任务（示例，可换）：
 
-   > 使用 jev-pi-router 路由纪律完成以下任务：给 ~/project/jev-pi-router 加一个
-   > `bin/jev-pi-stats` 小脚本（输出决策日志里各厂商的调用次数），并补一个 pytest 用例。
+   > 使用 jev-pi-router 路由纪律完成以下任务：给本路由器仓库（仓库根按技能 §Repo Root 动态
+   > 解析）加一个 `bin/jev-pi-stats` 小脚本（输出决策日志里各厂商的调用次数），并补一个 pytest 用例。
 
 2. **期望观察**（对照技能纪律逐条看）：
    - 主 Agent（强模型，如 mimo-v2.6-pro）先调 `jev-pi-decide` 拿路由（implement → flash 池）；
@@ -28,8 +29,8 @@
 3. **判定**（任务完成后跑）：
 
    ```bash
-   ~/project/jev-pi-router/.venv/bin/python \
-     ~/project/jev-pi-router/bin/jev-pi-report --days 1
+   ROOT="${JEV_PI_ROUTER_ROOT:-$(ls -d ~/project/jev-pi-router ~/workspace/github/jev-pi-router 2>/dev/null | head -1)}"
+   "$ROOT/.venv/bin/python" "$ROOT/bin/jev-pi-report" --days 1
    ```
 
    - ✅ `代码 review: cross_vendor` 占比 100%（SC-002）
@@ -57,7 +58,8 @@
 
 ## 故障排查
 
-- 决策器报"配置文件不存在" → 确认命令带了 `--config ~/project/jev-pi-router/router.config.yaml`。
+- 决策器报"配置文件不存在" → 确认命令带了 `--config "$JEV_PI_ROUTER_ROOT/router.config.yaml"`
+  （仓库根解析见技能 §Repo Root；家机 `~/project/jev-pi-router`、公司机 `~/workspace/github/jev-pi-router`）。
 - Jev fail-open 频繁 → 检查 `AI_GATEWAY_API_KEY`/`TYPESAFE_*` 环境变量（`.bashrc`）。
 - 想看每次路由的细节 → `tail -f ~/.jev-pi-router/decisions.jsonl`。
 - 回滚 pi 侧配置 → `cp ~/.pi/agent/{models,settings}.json.bak-jev-pi ~/.pi/agent/`（分别覆盖）。

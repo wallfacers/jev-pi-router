@@ -22,7 +22,11 @@ bin/jev-pi-doctor --config router.config.yaml check    # 校验 api_ref 已注�
 1. **缓存保活**（research R5）：将 `pi/models.promptcache.json` 的 `promptCache` 声明合并进
    `~/.pi/agent/models.json` 对应模型条目；并在 `~/.pi/settings.json` 设置
    `"cacheWarming": "idle"`。
-2. **派发技能**：将 `pi/skills/jev-pi-router/` 安装到 `~/.pi/agent/skills/`。
+2. **派发技能**（软链部署——仓库改动即时生效，无需复制同步；在仓库根执行）：
+
+   ```bash
+   ln -sf "$PWD/pi/skills/jev-pi-router" ~/.pi/agent/skills/jev-pi-router
+   ```
 3. **Jev 决策通道**：环境变量 `TYPESAFE_ENDPOINT` / `TYPESAFE_MODEL` / `TYPESAFE_API_KEY`
    （或 `AI_GATEWAY_API_KEY`）已配置即可；协议兼容 jev-ultrafast 的网关适配。
 
@@ -37,7 +41,9 @@ bin/jev-pi-doctor probe relay/cmd-deepseek-v4.1-flash --write-back   # 中转缓
 
 请求/响应契约：`specs/001-pi-model-routing/contracts/decision-cli.md`。
 日志 schema 与不变量：`contracts/decision-log-schema.md`（写入 `~/.jev-pi-router/decisions.jsonl`）。
-环境变量 `JEV_PI_ROUTER_HOME` 可改日志/状态目录（测试隔离用）。
+环境变量 `JEV_PI_ROUTER_HOME` 可改日志/状态目录（测试隔离用）；`JEV_PI_ROUTER_ROOT` 指明仓库根
+（技能文档据此解析路径，避免写死各机器的 checkout 位置；未设置时按 `~/project/jev-pi-router`、
+`~/workspace/github/jev-pi-router` 顺序探测）。
 
 ## 测试与验证
 
