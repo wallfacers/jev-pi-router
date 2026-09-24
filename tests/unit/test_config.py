@@ -124,6 +124,30 @@ def test_legacy_config_without_family_unchanged(tmp_path):
     assert all(e.family == "" for e in cfg.strong + cfg.flash)   # R1 兼容承诺：旧配置零变化
 
 
+# ── v1.4：api_ref 滑窗冷却参数（contracts/config-schema.md §breaker）──────────
+
+def test_breaker_window_defaults(config_path):
+    cfg = load_config(config_path)
+    assert cfg.fallback.breaker_window_sec == 3600
+    assert cfg.fallback.breaker_window_failures == 2
+    assert cfg.fallback.breaker_api_ref_cooldown_sec == 300
+
+
+def test_breaker_window_overrides(tmp_path):
+    path = write_cfg(tmp_path, BASE + "fallback: {breaker: {window_sec: 600, window_failures: 1, api_ref_cooldown_sec: 60}}\n")
+    cfg = load_config(path)
+    assert cfg.fallback.breaker_window_sec == 600
+    assert cfg.fallback.breaker_window_failures == 1      # =1 合法（单次失败即冷却）
+    assert cfg.fallback.breaker_api_ref_cooldown_sec == 60
+
+
+@pytest.mark.parametrize("key", ["window_sec", "window_failures", "api_ref_cooldown_sec"])
+def test_breaker_window_invalid_rejected(tmp_path, key):
+    path = write_cfg(tmp_path, BASE + f"fallback: {{breaker: {{{key}: 0}}}}\n")
+    with pytest.raises(ConfigError, match=key):
+        load_config(path)
+
+
 def test_promptcache_manifest_covers_all_pool_entries():
     """002 data-model 一致性约束 4：promptcache 清单键集合 ⊇ 示例池全部 api_ref。"""
     import json

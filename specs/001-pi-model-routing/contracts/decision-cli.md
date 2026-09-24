@@ -134,3 +134,50 @@ bin/jev-pi-doctor probe <api_ref> [--write-back]
   `bin/jev-pi-doctor cards <vendor> --add N` 记入/查询（负数扣减）。
 - `response.quota_hints`：存在封禁厂商时给出提示字符串数组（封禁原因/自动解锁时间/重置卡
   余量），供主 Agent 主动询问用户"是否用重置卡解锁"。
+
+## 扩展字段（v1.4，空响应/条目级滑窗冷却）
+
+背景：单体端点间歇性退化（空响应重试死循环，`bugs/2026-09-24-…`）在 vendor 级连续计数下
+够不着阈值——一次成功即清零，且 relay 这类聚合网关单条 api_ref 坏不代表整个 vendor 坏。
+故引入**条目级（api_ref）滑窗冷却**，与 vendor 级熔断互补并存，粒度不同、事件可区分。
+
+### 请求侧
+
+- `request.vendor_failures[]` / `request.vendor_success[]` 项新增**可选** `api_ref` 字段
+  （`provider/model` 格式）。缺失但带 `model` 时由路由器按 `f"{vendor}/{model}"` 合成
+  （依赖 `api_ref == vendor/model` 约定；显式字段优先）；两者都缺失 → 回退 vendor 级行为
+  （向后兼容，旧模板零改动即获条目级粒度）。
+- `trigger` 新增规范值 **`empty_response`**：客户端判定 = 本次 dispatch 中 assistant 响应
+  `content` 全空 **且** usage 全零（input/output/total tokens 均 0）；重试次数（如
+  auto_retry ≥3）仅作佐证，不作为上报门槛。该 trigger 计入熔断计数与条目滑窗。
+- **未知 trigger（如 `"error"`）按普通熔断计数失败容错**（不报错），既有行为落成文字。
+
+### 语义（两级惩罚关系）
+
+| 层级 | 键 | 触发条件 | 效果 |
+|------|-----|----------|------|
+| vendor 级熔断 | vendor | **连续** `breaker.consecutive_failures` 次失败（成功即清零） | 该厂商全部条目退池至冷却到期 |
+| 条目级滑窗 | api_ref | `window_sec` 内累计 `window_failures` 次**熔断计数类**失败 | 该 api_ref 冷却 `api_ref_cooldown_sec`，冷却期不进池 |
+
+- 滑窗只计熔断计数类失败（timeout / http_5xx / empty_response / 未知 trigger / explicit 等）；
+  `rate_limit`（重试即可）与 `quota`（走额度封禁）维持既有分流，**不计入滑窗**（避免双重惩罚）。
+- **未达滑窗阈值**（窗口内有失败但不足 N 次）→ 该条目仅**降权**（排序排到健康条目之后，
+  仍可被选中）——"同家族有可用替代且近期出错时优先替代"由此自然成立；
+  无故障状态时池序完全不变。
+- 冷却到期回池，但窗口内失败记录未滚出前持续降权（间歇故障条目持续被压制）。
+- `vendor_success` 带 api_ref → 清空该条目滑窗 + 立即解除冷却（`api_ref_recover` 事件）；
+  **不带 api_ref → 只闭合 vendor 级**（vendor 级成功不能证明该具体端点恢复）。
+- 池枯竭兜底：**排除不穿透**（保持 chosen 非 None，不破坏 CLI 契约）但**降权穿透**——
+  兜底时仍优先健康条目，坏条目只在别无选择时被选中。复核（review_plan）走严格过滤，
+  永不穿透。
+
+### 响应侧
+
+`response.fallback_events` 新增两个 type（`to_model` 承载 api_ref，vendor 级事件 to_model 为
+null/vendor，两级可区分）：
+- `api_ref_cooldown`：条目滑窗达阈值 → 冷却开（trigger 为实际失败类型）；冷却中重复失败
+  不重复开断/发事件；
+- `api_ref_recover`：`vendor_success` 带 api_ref 且原在冷却中 → 解除。
+
+自然冷却到期**不产生事件**（与 vendor 级 `open→half_open` 迁移一致）；`rationale` 在有条目
+被降权时附 "近期失败条目已降权"。

@@ -42,6 +42,19 @@ def order_pool(entries: list, auto_enabled: bool = False) -> list:
     return sorted(enabled, key=key)
 
 
+def demote_recent_failures(entries: list, recent_fail_refs) -> list:
+    """v1.4 降权：滑窗内有失败记录的条目排到健康条目之后（稳定分区，组内保持原序）。
+
+    recent_fail_refs 为空时返回原列表（恒等）——无故障状态时池序完全不变。
+    "同家族有可用替代且近期出错 → 优先替代"由此自然成立：同 family 的健康替代
+    不再被近期出错的条目挤到后面。
+    """
+    refs = set(recent_fail_refs or ())
+    if not refs:
+        return list(entries)
+    return sorted(entries, key=lambda e: e.api_ref in refs)   # Python sort 稳定
+
+
 def pick(pool: list, avoid_refs: set | frozenset = (), avoid_vendors: set | frozenset = ()):
     """选第一个可用条目（FR-010 升级时用 avoid_vendors 换厂商）。"""
     for entry in pool:

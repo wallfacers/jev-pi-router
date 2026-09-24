@@ -118,3 +118,82 @@ def test_jev_ref_carries_cost_and_cache_signal():
     ref = jev_ref(e)
     assert ref["cost_hint"] == 0.15 and ref["cache_passthrough"] == "full"
     assert ref["family"] == "qwen3.8-flash" and ref["api_ref"] == "qianwenai/qwen3.8-flash"
+
+
+# ── v1.4 空响应触发器 + api_ref 滑窗冷却（bug 2026-09-24 relay 死循环回归）────
+
+RELAY_REF = "relay/cmd-deepseek-v4.1-flash"
+# 排除既有前四条 flash，只剩 relay 与 qianwenai/deepseek-v4.1-flash（同 family）竞争
+BEFORE_RELAY = ["deepseek/deepseek-flash", "glm/glm-5.3-flash",
+                "opencode-go/deepseek-flash", "qianwenai/qwen3.8-flash"]
+
+
+def test_empty_response_window_cooldown_excludes_entry(sample_request, config_path):
+    """empty_response ×2（带 api_ref）→ 条目冷却事件 + 该条目退出 chosen/fallback_order。"""
+    request = _req(sample_request, vendor_failures=[
+        {"vendor": "relay", "api_ref": RELAY_REF, "trigger": "empty_response"}] * 2)
+    response = decide(request, engine="rules", config_path=config_path)
+    assert "api_ref_cooldown" in [e["type"] for e in response["fallback_events"]]
+    assert (response["chosen"] or {}).get("api_ref") != RELAY_REF
+    assert RELAY_REF not in {e["api_ref"] for e in response["fallback_order"]}
+
+
+def test_single_error_demotes_relay_to_same_family_alternative(sample_request, config_path):
+    """bug 主场景回归：relay 1 次失败（旧模板不带 api_ref → vendor/model 合成）→ 降权，
+    同 family 健康替代 qianwenai/deepseek-v4.1-flash 被优先选中（修复前会选 relay）。"""
+    request = _req(sample_request,
+                   vendor_failures=[{"vendor": "relay", "model": "cmd-deepseek-v4.1-flash",
+                                     "trigger": "error"}],
+                   history={"review_fail_count": 0, "previous_models": BEFORE_RELAY})
+    response = decide(request, engine="rules", config_path=config_path)
+    assert response["chosen"]["api_ref"] == "qianwenai/deepseek-v4.1-flash"
+    assert "近期失败条目已降权" in response["rationale"]
+
+
+def test_no_failure_state_keeps_pool_order(sample_request, config_path):
+    """降权恒等性守卫：无故障状态时池序完全不变（池首不动）。"""
+    response = decide(_req(sample_request), engine="rules", config_path=config_path)
+    assert response["chosen"]["api_ref"] == "deepseek/deepseek-flash"
+
+
+def test_legacy_failures_without_ref_stay_vendor_level(sample_request, config_path):
+    """旧模板兼容：无 api_ref 且无 model → 仅 vendor 级熔断，不产生任何条目级状态。"""
+    response = decide(_req(sample_request, vendor_failures=_failures()),
+                      engine="rules", config_path=config_path)
+    assert "breaker_open" in [e["type"] for e in response["fallback_events"]]
+    state = json.loads(open(os.path.join(os.environ["JEV_PI_ROUTER_HOME"], "state.json"),
+                            encoding="utf-8").read())
+    assert state["api_refs"] == {}
+
+
+def test_rate_limit_not_counted_in_window(sample_request, config_path):
+    """429 分流：rate_limit 不计入条目滑窗（重试即可），条目照常在池内。"""
+    request = _req(sample_request, vendor_failures=[
+        {"vendor": "relay", "api_ref": RELAY_REF, "trigger": "rate_limit"}] * 2)
+    response = decide(request, engine="rules", config_path=config_path)
+    assert response["fallback_events"] == []
+    assert RELAY_REF in {e["api_ref"] for e in response["fallback_order"]}
+
+
+def test_vendor_success_with_api_ref_restores_entry(sample_request, config_path):
+    """带 api_ref 的成功回报 → api_ref_recover + 条目重回可派轮换。"""
+    decide(_req(sample_request, vendor_failures=[
+        {"vendor": "relay", "api_ref": RELAY_REF, "trigger": "empty_response"}] * 2),
+        engine="rules", config_path=config_path)
+    response = decide(_req(sample_request, vendor_success=[{"vendor": "relay", "api_ref": RELAY_REF}]),
+                      engine="rules", config_path=config_path)
+    assert "api_ref_recover" in [e["type"] for e in response["fallback_events"]]
+    assert RELAY_REF in {e["api_ref"] for e in response["fallback_order"]}
+
+
+def test_pool_exhaustion_demotes_but_does_not_exclude(sample_request, config_path):
+    """兜底不穿透排除：flash 池全条目冷却 → chosen 仍非 None（不破坏 CLI 契约）。"""
+    import yaml
+    refs = [i["api_ref"] for i in
+            yaml.safe_load(config_path.read_text(encoding="utf-8"))["flash_pool"]]
+    failures = [{"vendor": r.split("/")[0], "api_ref": r, "trigger": "empty_response"}
+                for r in refs for _ in range(2)]
+    response = decide(_req(sample_request, vendor_failures=failures),
+                      engine="rules", config_path=config_path)
+    assert response["chosen"] is not None
+    assert response["chosen"]["pool"] == "flash"

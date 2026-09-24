@@ -80,8 +80,11 @@ fallback:
     escalate_to: strong
     switch_vendor: true            # 升级必须换厂商
   breaker:
-    consecutive_failures: 3        # 连续失败 N 次开断
+    consecutive_failures: 3        # 连续失败 N 次开断（vendor 级）
     cooldown_sec: 300              # 冷却窗口
+    window_sec: 3600               # v1.4：api_ref 条目级滑窗长度（秒）
+    window_failures: 2             # v1.4：滑窗内 N 次熔断类失败 → 该 api_ref 冷却
+    api_ref_cooldown_sec: 300      # v1.4：api_ref 冷却时长（vendor_success 带 api_ref 即时解除）
 
 # ── 自动模式 / 自动探测（FR-012，US4）────────────────────────────
 auto_mode:
@@ -105,6 +108,7 @@ b_mode:
 | `decision_engine.fail_open` 必须为 `true` 方可投产 | FR-006 |
 | `review.max_rounds` ≥ 1；`quality_upgrade.review_fails` ≤ `review.max_rounds` | FR-010 一致性 |
 | `cache_passthrough` ∈ {full, partial, none, unknown}；路由权重序 full > partial > unknown > none | R8 |
+| `fallback.breaker.window_sec` / `window_failures` / `api_ref_cooldown_sec` 均 ≥ 1（v1.4 条目级滑窗；`window_failures=1` = 单次失败即冷却，合法但激进） | v1.4 |
 | 配置变更即时生效（每次决策重新加载） | FR-013 |
 
 ## pi 侧配套（非本文件，安装时合并）

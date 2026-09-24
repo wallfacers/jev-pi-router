@@ -25,10 +25,10 @@ Phase 1 输出。每次路由决策追加一行 JSON（只增不改），路径 
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| type | enum | fault_transfer \| quality_upgrade \| breaker_open \| breaker_close \| degrade_single_vendor \| pool_exhausted |
+| type | enum | fault_transfer \| quality_upgrade \| breaker_open \| breaker_close \| degrade_single_vendor \| pool_exhausted \| api_ref_cooldown \| api_ref_recover |
 | from_model | string\|null | api_ref |
-| to_model | string\|null | api_ref；无迁移为 null |
-| trigger | enum | timeout \| http_5xx \| quota \| rate_limit \| review_reject \| explicit |
+| to_model | string\|null | api_ref；无迁移为 null；条目级事件（api_ref_cooldown / api_ref_recover）承载 api_ref |
+| trigger | enum | timeout \| http_5xx \| quota \| rate_limit \| review_reject \| explicit \| empty_response |
 | attempt | int | 从 1 起 |
 | ts | string | ISO 8601 |
 
@@ -49,3 +49,17 @@ Phase 1 输出。每次路由决策追加一行 JSON（只增不改），路径 
 - 一行 = 一次完整裁决（含 fail-open）；不允许跳过写日志（FR-011）。
 - `review_plan.degrade=true` 的记录必须至少含一个 `degrade_single_vendor` 事件（SC-002 "0 次静默跳过"）。
 - `engine="rules" ∧ fail_open=true` ⇔ 本次 Jev 路径失败（可观测性对账）。
+
+## 扩展（v1.4，条目级滑窗冷却）
+
+- 事件 type 新增 `api_ref_cooldown`（条目滑窗达阈值开冷）/ `api_ref_recover`
+  （`vendor_success` 带 api_ref 解除冷却）；`to_model` 承载 api_ref，与 vendor 级事件区分。
+  自然冷却到期不产生事件。示例：
+
+  ```json
+  {"type":"api_ref_cooldown","from_model":null,"to_model":"relay/cmd-deepseek-v4.1-flash","trigger":"empty_response","attempt":1,"ts":"2026-09-24T15:30:00+08:00"}
+  ```
+
+- trigger 新增 `empty_response`（客户端判定：响应 content 全空 + usage 全零；详见
+  contracts/decision-cli.md v1.4 节）。未知 trigger 仍按普通熔断计数容错。
+- 消费方无需改动：report/stats 按 type 泛型分组，新 type 自动作为新分组值出现。

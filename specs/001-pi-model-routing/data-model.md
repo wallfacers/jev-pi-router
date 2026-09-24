@@ -41,15 +41,25 @@ decision_id（uuid）、ts、session_id_hash（哈希不存原文）、task_ref�
 ### FallbackEvent（兜底事件）
 | 字段 | 说明 |
 |------|------|
-| type | fault_transfer \| quality_upgrade \| breaker_open \| breaker_close \| degrade_single_vendor \| pool_exhausted |
-| from_model / to_model | 迁移两端（api_ref），无迁移则 to_model 为 null |
-| trigger | timeout \| http_5xx \| quota \| rate_limit \| review_reject \| explicit |
+| type | fault_transfer \| quality_upgrade \| breaker_open \| breaker_close \| degrade_single_vendor \| pool_exhausted \| api_ref_cooldown \| api_ref_recover |
+| from_model / to_model | 迁移两端（api_ref），无迁移则 to_model 为 null；条目级事件 to_model 承载 api_ref |
+| trigger | timeout \| http_5xx \| quota \| rate_limit \| review_reject \| explicit \| empty_response |
 | attempt | 第几次尝试（1 起） |
 | ts | ISO 时间戳 |
 
 ### BreakerState（熔断状态，运行时态，按 vendor 键）
 - 字段：consecutive_failures、state（closed \| open \| half_open）、open_until。
 - 校验：冷却/阈值参数来自配置（默认：连续 3 次失败开断、冷却 300s，FR-009）。
+
+### ApiRefWindowState（条目级滑窗状态，运行时态，按 api_ref 键；v1.4）
+- 字段：failures（窗口内失败的 epoch 秒时间戳列表，惰性 prune）、cooldown_until（>0 = 冷却中）。
+- 语义：与 vendor 级 BreakerState 互补——后者计**连续**失败（成功即清零），本状态计**滑窗累计**
+  （成功带 api_ref 才清窗）；粒度更细（relay 单条端点退化不至连坐同厂商其他条目）。
+- 校验：窗口/阈值参数来自配置（默认：`window_sec` 3600 内 `window_failures` 2 次失败 → 冷却
+  `api_ref_cooldown_sec` 300s）；仅熔断计数类失败计入（rate_limit/quota 分流不计）；
+  未达阈值仅**降权**（排序后置，仍可选中）；无失败记录时池序完全不变。
+- 持久化：state.json 顶层键 `api_refs`（`breakers` 键形状不变，旧文件自然兼容）；
+  save 前全量清扫窗口外且冷却已过的条目（状态有界）。
 
 ### QualityEscalationState（质量升级计数，按 task_ref 键）
 - 字段：review_fail_count、escalated、escalated_to。
@@ -64,6 +74,16 @@ half_open --(1 次成功)--> closed
 half_open --(1 次失败)--> open（重新计冷却）
 ```
 开断/恢复各产生 `breaker_open` / `breaker_close` 事件（FR-009）。
+
+### 条目级滑窗冷却（ApiRefWindowState，per api_ref；v1.4）
+```
+窗口内失败 < window_failures  → 降权（排序后置，仍可选中）
+窗口内失败 >= window_failures → api_ref_cooldown（冷却 api_ref_cooldown_sec，退池）
+冷却 → 到期 → 回池但窗口内仍有失败记录 → 持续降权 → 再 1 次失败即再冷却
+冷却中 + vendor_success(带 api_ref) → api_ref_recover（清窗 + 立即回池）
+```
+自然冷却到期不产生事件（与 `open→half_open` 迁移一致）；两级惩罚并存（同一失败可同时触发
+vendor 熔断与条目冷却，事件可区分：条目级 to_model 承载 api_ref）。
 
 ### 质量升级（QualityEscalationState，per task_ref）
 ```
@@ -80,6 +100,7 @@ Role        1 ── 1 ModelPool（implement→flash，其余→strong）
 RouteDecision * ── 1 ModelEntry(chosen)
 RouteDecision 1 ── * FallbackEvent
 ModelEntry  1 ── 0..1 BreakerState（按 vendor 共享）
+ModelEntry  1 ── 0..1 ApiRefWindowState（按 api_ref 键，v1.4；精确到条目）
 RouteDecision 1 ── 0..1 QualityEscalationState（按 task_ref 共享）
 ```
 
@@ -89,3 +110,6 @@ RouteDecision 1 ── 0..1 QualityEscalationState（按 task_ref 共享）
 - FR-007 → code_review 异源约束；FR-008 → plan_review 双向互审约束
 - FR-009 → BreakerState 转移 + fault_transfer 事件；FR-010 → QualityEscalationState 转移 + quality_upgrade 事件
 - FR-011 → RouteDecision/FallbackEvent 全量留痕；FR-012/013 → 全部池/阈值/配对均可由配置改变
+- v1.4（bug 2026-09-24）→ ApiRefWindowState 转移 + api_ref_cooldown/api_ref_recover 事件；
+  条目级粒度与滑窗累计弥补 vendor 级连续计数对间歇故障的盲区；降权不排除（池序有故障时变化、
+  无故障时恒等）

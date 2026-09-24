@@ -41,6 +41,20 @@ def jev_ref(entry) -> dict:
     return ref
 
 
+def report_ref(item: dict) -> str:
+    """上报项的 api_ref（v1.4）：显式字段优先，缺失时按 vendor/model 合成。
+
+    合成依赖 "api_ref == vendor/model" 约定（本仓库全部条目成立），使旧模板（只报
+    vendor+model）零改动即获条目级滑窗粒度；两者都缺失返回 ""，回退 vendor 级行为。
+    """
+    ref = item.get("api_ref")
+    if ref:
+        return ref
+    if item.get("model"):
+        return f"{item.get('vendor')}/{item['model']}"
+    return ""
+
+
 def decide(request: dict, engine: str = "auto", config_path=None, timeout_ms: int | None = None) -> dict:
     missing = [k for k in REQUIRED_REQUEST if not request.get(k)]
     if missing:
@@ -54,7 +68,10 @@ def decide(request: dict, engine: str = "auto", config_path=None, timeout_ms: in
     rationale_parts: list = []
 
     registry = BreakerRegistry(threshold=cfg.fallback.breaker_failures,
-                               cooldown_sec=cfg.fallback.breaker_cooldown_sec)
+                               cooldown_sec=cfg.fallback.breaker_cooldown_sec,
+                               window_sec=cfg.fallback.breaker_window_sec,
+                               window_failures=cfg.fallback.breaker_window_failures,
+                               api_ref_cooldown_sec=cfg.fallback.breaker_api_ref_cooldown_sec)
     registry.load()
     quotas = QuotaRegistry()
     quotas.load()
@@ -67,7 +84,8 @@ def decide(request: dict, engine: str = "auto", config_path=None, timeout_ms: in
     if isinstance(successes, dict):
         successes = [successes]
     for success in successes:
-        fallback_events.extend(registry.record_success(success["vendor"], ts=ts))
+        fallback_events.extend(registry.record_success(success["vendor"], ts=ts,
+                                                       api_ref=report_ref(success)))
 
     # 人工解锁：套餐重置/重置卡/活动提前重置（quota_unlock: <reason>，可提前覆盖 quota_until）
     unlocks = request.get("vendor_unlock") or []
@@ -87,10 +105,13 @@ def decide(request: dict, engine: str = "auto", config_path=None, timeout_ms: in
             fallback_events.extend(quotas.block(
                 failure["vendor"], quota_until=float(failure.get("quota_until") or 0.0),
                 reason=failure.get("reason", "quota"), key_id=failure.get("key_id", ""), ts=ts))
-        elif trigger == "rate_limit":     # 并发/瞬时 429 → 重试即可，不计不封
+        elif trigger == "rate_limit":     # 并发/瞬时 429 → 重试即可，不计不封（含条目级滑窗）
             continue
         else:
-            fallback_events.extend(registry.record_failure(failure["vendor"], trigger, ts=ts))
+            # 其它（timeout / http_5xx / empty_response / 未知 trigger）→ vendor 熔断计数
+            # + v1.4 条目级滑窗（带 api_ref 时）
+            fallback_events.extend(registry.record_failure(failure["vendor"], trigger, ts=ts,
+                                                           api_ref=report_ref(failure)))
     if fallback_events:
         rationale_parts.append("熔断/额度事件已记录")
 
@@ -103,13 +124,22 @@ def decide(request: dict, engine: str = "auto", config_path=None, timeout_ms: in
         if fam_entry is not None:
             producer = {**producer, "family": fam_entry.family}
 
-    def available(pool):
-        return [e for e in rules.order_pool(pool, cfg.auto.enabled)
-                if registry.available(e.vendor) and quotas.available(e.vendor)
-                and e.api_ref not in previous_refs]
+    demoted = registry.demotion_set()    # v1.4：滑窗内有失败记录的条目（选路降权，非排除）
 
-    strong = available(cfg.strong) or rules.order_pool(cfg.strong, cfg.auto.enabled)
-    flash = available(cfg.flash) or rules.order_pool(cfg.flash, cfg.auto.enabled)
+    def ordered_pool(pool):
+        return rules.demote_recent_failures(rules.order_pool(pool, cfg.auto.enabled), demoted)
+
+    def available(pool):
+        return [e for e in ordered_pool(pool)
+                if registry.available(e.vendor) and quotas.available(e.vendor)
+                and e.api_ref not in previous_refs
+                and registry.api_ref_available(e.api_ref)]
+
+    # 兜底：排除不穿透（保持 chosen 非 None），但降权穿透（别无选择时也优先健康条目）
+    strong = available(cfg.strong) or ordered_pool(cfg.strong)
+    flash = available(cfg.flash) or ordered_pool(cfg.flash)
+    if demoted & {e.api_ref for e in cfg.strong + cfg.flash}:
+        rationale_parts.append("近期失败条目已降权")      # 池外失败记录不产生噪音提示
     # 002 契约 §4（review F3）：复核配对只从真正可用（未封禁/未熔断/未轮换过）的强条目中选择，
     # 不随派发的池枯竭兜底回退全池——兜底不得穿透封禁；枯竭时无 reviewer，走 corrected 显式标记。
     strong_for_review = available(cfg.strong)

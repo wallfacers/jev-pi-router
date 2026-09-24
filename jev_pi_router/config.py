@@ -63,6 +63,9 @@ class FallbackCfg:
     switch_vendor: bool = True
     breaker_failures: int = 3
     breaker_cooldown_sec: int = 300
+    breaker_window_sec: int = 3600            # v1.4 api_ref 滑窗长度
+    breaker_window_failures: int = 2          # 滑窗内失败数阈值 → 条目冷却
+    breaker_api_ref_cooldown_sec: int = 300   # 条目冷却时长
 
 
 @dataclass(frozen=True)
@@ -182,7 +185,15 @@ def load_config(path: str | os.PathLike | None = None) -> RouterConfig:
         switch_vendor=bool(qu.get("switch_vendor", True)),
         breaker_failures=int(br.get("consecutive_failures", 3)),
         breaker_cooldown_sec=int(br.get("cooldown_sec", 300)),
+        breaker_window_sec=int(br.get("window_sec", 3600)),
+        breaker_window_failures=int(br.get("window_failures", 2)),
+        breaker_api_ref_cooldown_sec=int(br.get("api_ref_cooldown_sec", 300)),
     )
+    for name, value in (("window_sec", fallback.breaker_window_sec),
+                        ("window_failures", fallback.breaker_window_failures),
+                        ("api_ref_cooldown_sec", fallback.breaker_api_ref_cooldown_sec)):
+        if value < 1:
+            errors.append(f"fallback.breaker.{name} 必须 ≥ 1（当前 {value}）")
     if not 1 <= fallback.quality_review_fails <= review.max_rounds:
         errors.append(
             f"fallback.quality_upgrade.review_fails({fallback.quality_review_fails}) "

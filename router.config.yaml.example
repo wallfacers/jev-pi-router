@@ -109,6 +109,9 @@ fallback:
   breaker:
     consecutive_failures: 3
     cooldown_sec: 300
+    window_sec: 3600              # api_ref 滑窗长度（秒，v1.4 条目级滑窗冷却）
+    window_failures: 2            # 滑窗内 N 次熔断类失败 → 该 api_ref 冷却
+    api_ref_cooldown_sec: 300     # api_ref 冷却时长（成功回报即时解除）
 
 # ── 自动模式 / 自动探测（FR-012）──────────────────────────────────
 auto_mode:

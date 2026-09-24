@@ -142,6 +142,23 @@ def test_breaker_lifecycle_independent_of_quota(config_path):
     assert "qianwenai" not in quotas.get("quotas", {})        # 独立：timeout 不产生额度封禁
 
 
+def test_api_ref_cooldown_persists_across_cli_invocations(config_path):
+    """v1.4：两次进程调用间 api_ref 滑窗落盘生效（empty_response 死循环场景，仿 ⑤ 模式）。"""
+    ref = "relay/cmd-deepseek-v4.1-flash"
+    failure = {"vendor": "relay", "api_ref": ref, "trigger": "empty_response"}
+    first = json.loads(run_cli({**_impl_request("t-002-ar0"), "vendor_failures": [failure]},
+                               config_path).stdout)
+    assert ref in {e["api_ref"] for e in first["fallback_order"]}    # 1 次：仅降权，仍在池
+    second = json.loads(run_cli({**_impl_request("t-002-ar1"), "vendor_failures": [failure]},
+                                config_path).stdout)
+    assert "api_ref_cooldown" in [e["type"] for e in second["fallback_events"]]
+    assert ref not in {e["api_ref"] for e in second["fallback_order"]}
+    assert second["chosen"]["api_ref"] != ref
+    state = json.loads((Path(os.environ["JEV_PI_ROUTER_HOME"]) / "state.json")
+                       .read_text(encoding="utf-8"))
+    assert state["api_refs"][ref]["cooldown_until"] > 0              # 滑窗状态跨进程持久化
+
+
 def test_fail_open_when_jev_unreachable(config_path, sample_request):
     """quickstart V2 / SC-004：Jev 不可用 → engine=rules、fail_open=true、exit 0。"""
     result = run_cli(sample_request, config_path, engine="auto", env_extra={
